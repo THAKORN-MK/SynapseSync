@@ -8,11 +8,23 @@ def test_database_url_uses_supabase_postgres_pooler_scheme(monkeypatch, tmp_path
         "DATABASE_URL",
         "postgresql://postgres.project-ref:secret@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres",
     )
-
     assert resolve_database_url(None, tmp_path) == (
         "postgresql+psycopg://postgres.project-ref:secret@"
         "aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres"
     )
+
+
+def test_configured_data_dir_does_not_require_repository_layout(monkeypatch, tmp_path):
+    monkeypatch.setenv("SYNAPSESYNC_DATA_DIR", str(tmp_path))
+
+    def unexpected_repository_lookup():
+        raise AssertionError("A configured data directory must not inspect the source tree")
+
+    monkeypatch.setattr("app.main._repository_root", unexpected_repository_lookup)
+
+    app = create_app(database_url=f"sqlite:///{(tmp_path / 'app.db').as_posix()}")
+
+    assert app.state.image_storage_dir == tmp_path / "profile-images"
 
 
 def test_deployed_app_serves_spa_assets_and_preserves_api_404s(tmp_path):

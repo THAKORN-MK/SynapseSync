@@ -74,7 +74,8 @@ def create_app(
     if tutor_provider is not None and tutor_provider_factory is not None:
         raise ValueError("Provide either tutor_provider or tutor_provider_factory, not both")
 
-    data_dir = Path(os.environ.get("SYNAPSESYNC_DATA_DIR", _repository_root() / ".local"))
+    configured_data_dir = os.environ.get("SYNAPSESYNC_DATA_DIR")
+    data_dir = Path(configured_data_dir) if configured_data_dir else _repository_root() / ".local"
     resolved_database_url = resolve_database_url(database_url, data_dir)
     configured_webapp_dir = webapp_dist_dir or os.environ.get("WEBAPP_DIST_DIR")
     resolved_webapp_dist_dir = Path(configured_webapp_dir) if configured_webapp_dir else None
