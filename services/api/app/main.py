@@ -5,7 +5,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from app import __version__
 from app.ai.config import AISettings
@@ -41,6 +42,19 @@ def _repository_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def resolve_database_url(database_url: str | None, data_dir: Path) -> str:
+    """Resolve local or hosted database configuration without exposing credentials."""
+    configured_url = database_url or os.environ.get("DATABASE_URL")
+    if not configured_url:
+        return f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
+
+    if configured_url.startswith("postgres://"):
+        return "postgresql+psycopg://" + configured_url.removeprefix("postgres://")
+    if configured_url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + configured_url.removeprefix("postgresql://")
+    return configured_url
+
+
 def create_app(
     database_url: str | None = None,
     image_storage_dir: str | Path | None = None,
@@ -53,6 +67,7 @@ def create_app(
     ai_settings: AISettings | None = None,
     tutor_provider: TutorProvider | None = None,
     tutor_provider_factory: Callable[[str | None, str | None], TutorProvider] | None = None,
+    webapp_dist_dir: str | Path | None = None,
 ) -> FastAPI:
     if quiz_provider is not None and quiz_provider_factory is not None:
         raise ValueError("Provide either quiz_provider or quiz_provider_factory, not both")
@@ -60,7 +75,9 @@ def create_app(
         raise ValueError("Provide either tutor_provider or tutor_provider_factory, not both")
 
     data_dir = Path(os.environ.get("SYNAPSESYNC_DATA_DIR", _repository_root() / ".local"))
-    resolved_database_url = database_url or f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
+    resolved_database_url = resolve_database_url(database_url, data_dir)
+    configured_webapp_dir = webapp_dist_dir or os.environ.get("WEBAPP_DIST_DIR")
+    resolved_webapp_dist_dir = Path(configured_webapp_dir) if configured_webapp_dir else None
     resolved_image_storage_dir = Path(image_storage_dir) if image_storage_dir else data_dir / "profile-images"
     resolved_document_storage_dir = Path(document_storage_dir) if document_storage_dir else data_dir / "documents"
     resolved_document_staging_dir = Path(document_staging_dir) if document_staging_dir else data_dir / "document-staging"
@@ -103,6 +120,7 @@ def create_app(
     application.state.document_storage_dir = resolved_document_storage_dir
     application.state.document_staging_dir = resolved_document_staging_dir
     application.state.tutor_attachment_storage_dir = resolved_tutor_attachment_storage_dir
+    application.state.webapp_dist_dir = resolved_webapp_dist_dir
     application.state.cookie_secure = cookie_secure
     resolved_ai_settings = ai_settings or AISettings.from_environment(Path(__file__).resolve().parent.parent)
     application.state.ai_settings = resolved_ai_settings
@@ -138,6 +156,24 @@ def create_app(
     application.include_router(tutor_router, prefix="/api")
     application.include_router(progress_router, prefix="/api")
     application.include_router(dashboard_router, prefix="/api")
+
+    webapp_index = resolved_webapp_dist_dir / "index.html" if resolved_webapp_dist_dir else None
+    if webapp_index is not None and webapp_index.is_file():
+        @application.get("/{full_path:path}", include_in_schema=False)
+        def serve_webapp(full_path: str):
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="ไม่พบเส้นทาง API นี้")
+
+            static_root = resolved_webapp_dist_dir.resolve()
+            requested_file = (static_root / full_path).resolve()
+            if requested_file != static_root and static_root not in requested_file.parents:
+                raise HTTPException(status_code=404, detail="ไม่พบไฟล์นี้")
+            if requested_file.is_file():
+                return FileResponse(requested_file)
+            if Path(full_path).suffix:
+                raise HTTPException(status_code=404, detail="ไม่พบไฟล์นี้")
+            return FileResponse(webapp_index)
+
     return application
 
 
