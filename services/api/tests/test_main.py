@@ -24,6 +24,47 @@ def test_configured_data_directory_does_not_resolve_repository_root(tmp_path: Pa
     assert application.state.document_storage_dir == configured_data_dir / "documents"
 
 
+def test_database_url_environment_variable_is_used_when_no_explicit_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    main = importlib.import_module("app.main")
+    database_path = tmp_path / "persistent.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    application = main.create_app()
+
+    assert application.state.session_factory.kw["bind"].url.database == database_path.as_posix()
+
+
+def test_explicit_database_url_overrides_environment_database_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    main = importlib.import_module("app.main")
+    environment_path = tmp_path / "environment.db"
+    explicit_path = tmp_path / "explicit.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{environment_path.as_posix()}")
+
+    application = main.create_app(database_url=f"sqlite:///{explicit_path.as_posix()}")
+
+    assert application.state.session_factory.kw["bind"].url.database == explicit_path.as_posix()
+
+
+def test_missing_database_url_keeps_the_local_sqlite_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    main = importlib.import_module("app.main")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("SYNAPSESYNC_DATA_DIR", raising=False)
+    monkeypatch.setattr(main, "_repository_root", lambda: tmp_path)
+
+    application = main.create_app()
+
+    engine_url = application.state.session_factory.kw["bind"].url
+    assert engine_url.drivername == "sqlite"
+    assert engine_url.database == (tmp_path / ".local" / "synapsesync.db").as_posix()
+
+
 def test_serves_spa_index_for_root_and_client_routes(tmp_path: Path) -> None:
     main = importlib.import_module("app.main")
     web_dir = tmp_path / "web"

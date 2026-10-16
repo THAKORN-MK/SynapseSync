@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -155,10 +156,15 @@ def migrate_deadline_status(engine) -> None:
 
 
 def create_session_factory(database_url: str) -> sessionmaker:
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite:") else {}
-    engine = create_engine(database_url, connect_args=connect_args)
+    url = make_url(database_url)
+    if url.drivername in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+psycopg")
 
-    if database_url.startswith("sqlite:"):
+    is_sqlite = url.get_backend_name() == "sqlite"
+    connect_args = {"check_same_thread": False} if is_sqlite else {}
+    engine = create_engine(url, connect_args=connect_args)
+
+    if is_sqlite:
         @event.listens_for(engine, "connect")
         def enable_sqlite_foreign_keys(connection, _record) -> None:
             connection.create_function(

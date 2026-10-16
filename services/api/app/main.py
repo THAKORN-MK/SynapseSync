@@ -68,7 +68,10 @@ def create_app(
     data_dir = Path(configured_data_dir) if configured_data_dir else _repository_root() / ".local"
     configured_web_dir = str(web_static_dir) if web_static_dir is not None else os.environ.get("SYNAPSESYNC_WEB_DIR")
     web_dir = Path(configured_web_dir).resolve() if configured_web_dir else None
-    resolved_database_url = database_url or f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
+    configured_database_url = database_url or os.environ.get("DATABASE_URL")
+    resolved_database_url = configured_database_url or (
+        f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
+    )
     resolved_image_storage_dir = Path(image_storage_dir) if image_storage_dir else data_dir / "profile-images"
     resolved_document_storage_dir = Path(document_storage_dir) if document_storage_dir else data_dir / "documents"
     resolved_document_staging_dir = Path(document_staging_dir) if document_staging_dir else data_dir / "document-staging"

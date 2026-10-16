@@ -48,6 +48,24 @@ def test_users_have_unique_email_and_sessions_reference_a_user(tmp_path) -> None
             session.commit()
 
 
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgres://learner:secret@localhost:5432/synapsesync",
+        "postgresql://learner:secret@localhost:5432/synapsesync?sslmode=require",
+    ],
+)
+def test_postgresql_database_urls_use_psycopg_driver(database_url: str) -> None:
+    database = importlib.import_module("app.database")
+
+    session_factory = database.create_session_factory(database_url)
+    engine = session_factory.kw["bind"]
+    try:
+        assert engine.url.drivername == "postgresql+psycopg"
+    finally:
+        engine.dispose()
+
+
 def test_startup_migrates_existing_sqlite_profiles_without_losing_user_data(tmp_path) -> None:
     from fastapi.testclient import TestClient
 
