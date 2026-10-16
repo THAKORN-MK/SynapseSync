@@ -5,7 +5,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from dotenv import dotenv_values
 
 from app import __version__
@@ -56,6 +57,7 @@ def create_app(
     tutor_provider: TutorProvider | None = None,
     tutor_provider_factory: Callable[[str | None, str | None], TutorProvider] | None = None,
     storage_provider: FileStorageProvider | None = None,
+    web_static_dir: str | Path | None = None,
 ) -> FastAPI:
     if quiz_provider is not None and quiz_provider_factory is not None:
         raise ValueError("Provide either quiz_provider or quiz_provider_factory, not both")
@@ -64,6 +66,8 @@ def create_app(
 
     configured_data_dir = os.environ.get("SYNAPSESYNC_DATA_DIR")
     data_dir = Path(configured_data_dir) if configured_data_dir else _repository_root() / ".local"
+    configured_web_dir = str(web_static_dir) if web_static_dir is not None else os.environ.get("SYNAPSESYNC_WEB_DIR")
+    web_dir = Path(configured_web_dir).resolve() if configured_web_dir else None
     resolved_database_url = database_url or f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
     resolved_image_storage_dir = Path(image_storage_dir) if image_storage_dir else data_dir / "profile-images"
     resolved_document_storage_dir = Path(document_storage_dir) if document_storage_dir else data_dir / "documents"
@@ -149,6 +153,13 @@ def create_app(
         QuizUploadGuardMiddleware,
         session_factory=session_factory,
     )
+
+    index_file = web_dir / "index.html" if web_dir is not None else None
+    if index_file is not None and index_file.is_file():
+        @application.get("/", include_in_schema=False)
+        def serve_web_index() -> FileResponse:
+            return FileResponse(index_file)
+
     application.include_router(health_router)
     application.include_router(health_router, prefix="/api")
     application.include_router(auth_router, prefix="/api")
@@ -161,6 +172,19 @@ def create_app(
     application.include_router(tutor_router, prefix="/api")
     application.include_router(progress_router, prefix="/api")
     application.include_router(dashboard_router, prefix="/api")
+
+    if web_dir is not None and index_file is not None and index_file.is_file():
+        @application.get("/{web_path:path}", include_in_schema=False)
+        def serve_web_path(web_path: str) -> FileResponse:
+            requested_file = (web_dir / web_path).resolve()
+            if not requested_file.is_relative_to(web_dir):
+                raise HTTPException(status_code=404)
+            if requested_file.is_file():
+                return FileResponse(requested_file)
+            if web_path == "api" or web_path.startswith("api/") or Path(web_path).suffix:
+                raise HTTPException(status_code=404)
+            return FileResponse(index_file)
+
     return application
 
 

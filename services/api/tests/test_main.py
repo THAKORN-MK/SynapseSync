@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 
 def test_configured_data_directory_does_not_resolve_repository_root(tmp_path: Path, monkeypatch) -> None:
     main = importlib.import_module("app.main")
@@ -18,3 +20,57 @@ def test_configured_data_directory_does_not_resolve_repository_root(tmp_path: Pa
 
     assert application.state.image_storage_dir == configured_data_dir / "profile-images"
     assert application.state.document_storage_dir == configured_data_dir / "documents"
+
+
+def test_serves_spa_index_for_root_and_client_routes(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    client = TestClient(application)
+
+    assert client.get("/").text == "<main>SynapseSync UI</main>"
+    assert client.get("/tutor").text == "<main>SynapseSync UI</main>"
+
+
+def test_serves_built_asset_instead_of_spa_fallback(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    assets_dir = web_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    (assets_dir / "app.js").write_text("window.synapseSync = true;", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    response = TestClient(application).get("/assets/app.js")
+
+    assert response.status_code == 200
+    assert response.text == "window.synapseSync = true;"
+
+
+def test_unknown_api_path_does_not_return_spa_index(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    response = TestClient(application).get("/api/not-a-real-endpoint")
+
+    assert response.status_code == 404
+    assert "SynapseSync UI" not in response.text
+
+
+def test_missing_web_build_keeps_api_root_response(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    application = main.create_app(
+        database_url="sqlite:///:memory:",
+        web_static_dir=tmp_path / "missing-web-build",
+    )
+
+    response = TestClient(application).get("/")
+
+    assert response.status_code == 200
+    assert response.json()["service"] == "synapsesync-api"
