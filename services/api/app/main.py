@@ -5,8 +5,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from dotenv import dotenv_values
 
 from app import __version__
@@ -155,9 +155,25 @@ def create_app(
     )
 
     index_file = web_dir / "index.html" if web_dir is not None else None
-    if index_file is not None and index_file.is_file():
-        @application.get("/", include_in_schema=False)
-        def serve_web_index() -> FileResponse:
+    if web_dir is not None and index_file is not None and index_file.is_file():
+        @application.middleware("http")
+        async def serve_web_app(request: Request, call_next):
+            request_path = request.scope["path"]
+            reserved_paths = ("/api", "/health", "/docs", "/openapi.json", "/redoc")
+            is_reserved_path = any(
+                request_path == reserved_path or request_path.startswith(f"{reserved_path}/")
+                for reserved_path in reserved_paths
+            )
+            if request.method not in {"GET", "HEAD"} or is_reserved_path:
+                return await call_next(request)
+
+            requested_file = (web_dir / request_path.lstrip("/")).resolve()
+            if not requested_file.is_relative_to(web_dir):
+                return PlainTextResponse("Not Found", status_code=404)
+            if requested_file.is_file():
+                return FileResponse(requested_file)
+            if Path(request_path).suffix:
+                return await call_next(request)
             return FileResponse(index_file)
 
     application.include_router(health_router)
@@ -172,18 +188,6 @@ def create_app(
     application.include_router(tutor_router, prefix="/api")
     application.include_router(progress_router, prefix="/api")
     application.include_router(dashboard_router, prefix="/api")
-
-    if web_dir is not None and index_file is not None and index_file.is_file():
-        @application.get("/{web_path:path}", include_in_schema=False)
-        def serve_web_path(web_path: str) -> FileResponse:
-            requested_file = (web_dir / web_path).resolve()
-            if not requested_file.is_relative_to(web_dir):
-                raise HTTPException(status_code=404)
-            if requested_file.is_file():
-                return FileResponse(requested_file)
-            if web_path == "api" or web_path.startswith("api/") or Path(web_path).suffix:
-                raise HTTPException(status_code=404)
-            return FileResponse(index_file)
 
     return application
 

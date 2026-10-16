@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 def test_configured_data_directory_does_not_resolve_repository_root(tmp_path: Path, monkeypatch) -> None:
@@ -74,3 +76,62 @@ def test_missing_web_build_keeps_api_root_response(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["service"] == "synapsesync-api"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected_status", "expected_location"),
+    [
+        ("GET", "/api", 307, "/api/"),
+        ("GET", "/api/health/", 307, "/api/health"),
+        ("GET", "/api/auth/me/", 307, "/api/auth/me"),
+        ("POST", "/api/auth/login/", 307, "/api/auth/login"),
+        ("POST", "/api/not-real", 404, None),
+        ("GET", "/api/auth/login", 405, None),
+    ],
+)
+def test_frontend_serving_preserves_api_routing(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    expected_status: int,
+    expected_location: str | None,
+) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    response = TestClient(application, follow_redirects=False).request(method, path)
+
+    assert response.status_code == expected_status
+    if expected_location is not None:
+        assert urlparse(response.headers["location"]).path == expected_location
+
+
+def test_frontend_serving_preserves_health_route(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    response = TestClient(application).get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+def test_frontend_serving_rejects_traversal_outside_web_root(tmp_path: Path) -> None:
+    main = importlib.import_module("app.main")
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<main>SynapseSync UI</main>", encoding="utf-8")
+    secret_file = tmp_path / "secret.txt"
+    secret_file.write_text("not public", encoding="utf-8")
+    application = main.create_app(database_url="sqlite:///:memory:", web_static_dir=web_dir)
+
+    response = TestClient(application).get("/%2e%2e/secret.txt")
+
+    assert response.status_code == 404
+    assert "not public" not in response.text
