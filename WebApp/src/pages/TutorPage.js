@@ -26,6 +26,21 @@ function element(tagName, className = '', text) {
   return node;
 }
 
+function resizeTutorTextarea(input) {
+  const styles = window.getComputedStyle(input);
+  const fontSize = Number.parseFloat(styles.fontSize) || 16;
+  const lineHeight = Number.parseFloat(styles.lineHeight) || fontSize * 1.6;
+  const verticalPadding = (Number.parseFloat(styles.paddingTop) || 0)
+    + (Number.parseFloat(styles.paddingBottom) || 0);
+  const minHeight = lineHeight * 2 + verticalPadding;
+  const maxHeight = lineHeight * Number(input.dataset.maxRows || 10) + verticalPadding;
+
+  input.style.height = 'auto';
+  const contentHeight = Math.max(input.scrollHeight, minHeight);
+  input.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+  input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 function formatDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -51,6 +66,36 @@ function routeLink(label, path, navigate) {
     navigate?.(path);
   });
   return link;
+}
+
+const TUTOR_RAIL_ICON_PATHS = {
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  compose: '<path d="M12 20H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/><path d="m16 3 5 5"/><path d="m11 13 7.5-7.5a2.12 2.12 0 0 1 3 3L14 16l-4 1z"/>',
+  history: '<path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
+  home: '<path d="m3 10 9-7 9 7"/><path d="M5.5 9v11h13V9"/><path d="M9.5 20v-6h5v6"/>',
+  quiz: '<path d="M8 4H6a2 2 0 0 0-2 2v14h16V6a2 2 0 0 0-2-2h-2"/><rect x="8" y="2.5" width="8" height="4" rx="1"/><path d="M8 11h8M8 15h8M8 18h5"/>',
+  documents: '<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+};
+
+function tutorRailIcon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = TUTOR_RAIL_ICON_PATHS[name];
+  return svg;
+}
+
+function setTutorRailButton(button, iconName, label) {
+  button.replaceChildren(tutorRailIcon(iconName));
+  button.setAttribute('aria-label', label);
+  button.dataset.tooltip = label;
+  button.removeAttribute('title');
 }
 
 function renderConversationCard(item, onOpen) {
@@ -126,31 +171,55 @@ export function renderTutorPage({
 } = {}) {
   const page = element('section', 'page tutor-page');
   page.setAttribute('aria-labelledby', 'tutor-title');
-
-  const header = element('header', 'tutor-heading');
-  header.append(
-    element('p', 'eyebrow', 'YOUR AI STUDY PARTNER'),
-    element('h1', '', 'ถามเรื่องที่ยังไม่เข้าใจ'),
-    element('p', 'page-intro', 'คุยต่อเนื่องได้ บันทึกประวัติไว้ และกลับมาตอบคำถามเพิ่มเติมเมื่อพร้อม'),
-  );
-  header.querySelector('h1').id = 'tutor-title';
-  const headerActions = element('div', 'tutor-heading__actions');
-  const newConversationButton = element('button', 'button button-secondary', 'เริ่มคำถามใหม่');
+  const title = element('h1', 'tutor-sr-only', 'AI ติวเตอร์');
+  title.id = 'tutor-title';
+  const layout = element('div', 'tutor-layout');
+  const leftRail = element('nav', 'tutor-left-rail');
+  leftRail.dataset.role = 'tutor-left-rail';
+  leftRail.setAttribute('aria-label', 'เมนู AI ติวเตอร์');
+  const railBrand = element('span', 'tutor-left-rail__brand', 'S');
+  railBrand.setAttribute('aria-label', 'SynapseSync');
+  const newConversationButton = element('button', 'button button-secondary');
+  newConversationButton.classList.add('tutor-left-rail__button');
   newConversationButton.type = 'button';
   newConversationButton.dataset.action = 'new-conversation';
-  headerActions.append(newConversationButton, routeLink('คลังข้อสอบ', '/quizzes', navigate));
-  header.append(headerActions);
+  setTutorRailButton(newConversationButton, 'compose', 'เริ่มคำถามใหม่');
+  const historyToggle = element('button', 'button button-secondary tutor-left-rail__button');
+  historyToggle.type = 'button';
+  historyToggle.dataset.action = 'toggle-tutor-history';
+  historyToggle.setAttribute('aria-expanded', 'false');
+  historyToggle.setAttribute('aria-controls', 'tutor-history-panel');
+  setTutorRailButton(historyToggle, 'history', 'เปิดประวัติการถาม');
+  const homeLink = routeLink('', '/', navigate);
+  homeLink.className = 'tutor-left-rail__button tutor-left-rail__link';
+  setTutorRailButton(homeLink, 'home', 'หน้าหลัก');
+  const quizLink = routeLink('', '/quizzes', navigate);
+  quizLink.className = 'tutor-left-rail__button tutor-left-rail__link';
+  setTutorRailButton(quizLink, 'quiz', 'คลังข้อสอบ');
+  const documentsLink = routeLink('', '/documents', navigate);
+  documentsLink.className = 'tutor-left-rail__button tutor-left-rail__link';
+  setTutorRailButton(documentsLink, 'documents', 'คลังเอกสาร');
+  leftRail.append(railBrand, newConversationButton, historyToggle, homeLink, quizLink, documentsLink);
 
   const pageMessage = element('p', 'tutor-page-message');
   pageMessage.dataset.role = 'tutor-page-message';
   pageMessage.setAttribute('role', 'status');
   pageMessage.setAttribute('aria-live', 'polite');
 
-  const layout = element('div', 'tutor-layout');
   const historyPanel = element('aside', 'tutor-panel tutor-history');
+  historyPanel.hidden = true;
+  historyPanel.id = 'tutor-history-panel';
+  historyPanel.dataset.role = 'tutor-history';
   historyPanel.setAttribute('aria-labelledby', 'tutor-history-title');
-  historyPanel.append(element('h2', '', 'ประวัติการถาม'));
-  historyPanel.querySelector('h2').id = 'tutor-history-title';
+  const historyHeading = element('div', 'tutor-history__heading');
+  const historyTitle = element('h2', '', 'ประวัติการถาม');
+  historyTitle.id = 'tutor-history-title';
+  const historyClose = element('button', 'button button-danger tutor-history__close');
+  historyClose.type = 'button';
+  historyClose.dataset.action = 'close-tutor-history';
+  historyClose.setAttribute('aria-label', 'ปิดประวัติการถาม');
+  historyClose.append(tutorRailIcon('close'));
+  historyHeading.append(historyTitle, historyClose);
   const searchForm = element('form', 'tutor-history-search');
   searchForm.dataset.role = 'tutor-search-form';
   const searchInput = element('input', 'tutor-history-search__input');
@@ -177,33 +246,79 @@ export function renderTutorPage({
   historyMessage.setAttribute('role', 'status');
   const historyList = element('div', 'tutor-history-list');
   historyList.dataset.role = 'tutor-history-list';
-  historyPanel.append(searchForm, historyMessage, historyList);
+  historyPanel.append(historyHeading, searchForm, historyMessage, historyList);
 
   const conversationPanel = element('section', 'tutor-panel tutor-conversation');
   conversationPanel.setAttribute('aria-label', 'บทสนทนากับ AI ติวเตอร์');
   const conversationHeader = element('header', 'tutor-conversation__header');
   const conversationTitle = element('h2', '', 'เริ่มต้นด้วยคำถามของคุณ');
   conversationTitle.dataset.role = 'tutor-conversation-title';
+  conversationTitle.tabIndex = -1;
+  const conversationToolbar = element('div', 'tutor-conversation__toolbar');
   const conversationTags = element('div', 'tutor-conversation__tags');
   const status = element('p', 'tutor-status');
   status.dataset.role = 'tutor-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  conversationHeader.append(conversationTitle, conversationTags, status);
+  conversationToolbar.append(conversationTitle, conversationTags);
+  conversationHeader.append(conversationToolbar, status);
   const messages = element('div', 'tutor-messages');
   messages.dataset.role = 'tutor-messages';
   messages.setAttribute('aria-live', 'polite');
 
   const form = element('form', 'tutor-message-form');
   form.dataset.role = 'tutor-message-form';
-  const inputLabel = element('label', 'tutor-message-form__label', 'คำถามหรือคำตอบเพิ่มเติม');
+  form.noValidate = true;
+  const inputLabel = element('label', 'tutor-message-form__label tutor-message-form__label--sr-only', 'คำถามหรือคำตอบเพิ่มเติม');
+  const modelPicker = element('section', 'tutor-model-picker');
+  modelPicker.dataset.role = 'tutor-model-picker';
+  modelPicker.id = 'tutor-model-picker';
+  modelPicker.hidden = true;
+  modelPicker.setAttribute('role', 'dialog');
+  modelPicker.setAttribute('aria-modal', 'false');
+  modelPicker.setAttribute('aria-labelledby', 'tutor-model-picker-title');
+  const modelPickerHeader = element('div', 'tutor-model-picker__header');
+  const modelPickerTitle = element('h3', '', 'เลือกโมเดล AI');
+  modelPickerTitle.id = 'tutor-model-picker-title';
+  const modelPickerClose = element('button', 'tutor-model-picker__close', '×');
+  modelPickerClose.type = 'button';
+  modelPickerClose.dataset.action = 'close-tutor-model-picker';
+  modelPickerClose.setAttribute('aria-label', 'ปิดตัวเลือก Provider และ Model');
+  modelPickerHeader.append(modelPickerTitle, modelPickerClose);
+  const providerChoices = element('div', 'tutor-provider-choices');
+  providerChoices.dataset.role = 'tutor-provider-choices';
+  providerChoices.id = 'tutor-provider-choices';
+  providerChoices.hidden = true;
+  providerChoices.setAttribute('role', 'group');
+  providerChoices.setAttribute('aria-label', 'เลือกผู้ให้บริการ AI');
+  const providerSelector = element('div', 'tutor-provider-selector');
+  const providerSelectorLabel = element('span', 'tutor-provider-selector__label', 'Provider');
+  const providerToggle = element('button', 'tutor-provider-selector__toggle');
+  providerToggle.type = 'button';
+  providerToggle.dataset.action = 'toggle-tutor-provider-options';
+  providerToggle.setAttribute('aria-expanded', 'false');
+  providerToggle.setAttribute('aria-controls', providerChoices.id);
+  const providerToggleLabel = element('span', 'tutor-provider-selector__name', 'เลือก Provider');
+  const providerToggleChevron = element('span', 'tutor-provider-selector__chevron');
+  providerToggleChevron.setAttribute('aria-hidden', 'true');
+  providerToggle.append(providerToggleLabel, providerToggleChevron);
+  providerSelector.append(providerSelectorLabel, providerToggle, providerChoices);
+  const modelChoiceHeading = element('p', 'tutor-model-choices__label', 'เลือกรุ่นโมเดล');
+  const modelChoiceList = element('div', 'tutor-model-choices');
+  modelChoiceList.dataset.role = 'tutor-model-choices';
+  modelChoiceList.setAttribute('role', 'group');
+  modelChoiceList.setAttribute('aria-label', 'เลือกรุ่นโมเดล');
+  const modelEmpty = element('p', 'tutor-model-empty', 'ไม่มีโมเดลสำหรับ Provider นี้');
+  modelEmpty.dataset.role = 'tutor-model-empty';
   const modelControls = element('div', 'tutor-model-controls');
   const providerField = element('label', 'tutor-model-field', 'Provider');
+  providerField.hidden = true;
   const providerSelect = element('select', 'tutor-model-select themed-select');
   providerSelect.dataset.role = 'tutor-provider';
   providerSelect.setAttribute('aria-label', 'เลือก Provider สำหรับข้อความถัดไป');
   providerField.append(providerSelect);
   const modelField = element('label', 'tutor-model-field', 'Model');
+  modelField.hidden = true;
   const modelSelect = element('select', 'tutor-model-select themed-select');
   modelSelect.dataset.role = 'tutor-model';
   modelSelect.setAttribute('aria-label', 'เลือก Model สำหรับข้อความถัดไป');
@@ -218,20 +333,42 @@ export function renderTutorPage({
     responseLanguageSelect.append(option);
   }
   responseLanguageField.append(responseLanguageSelect);
-  modelControls.append(providerField, modelField, responseLanguageField);
+  modelControls.append(providerField, modelField);
+  modelPicker.append(modelPickerHeader, providerSelector, modelControls, modelChoiceHeading, modelChoiceList, modelEmpty);
+  const composer = element('div', 'tutor-composer');
   const input = element('textarea', 'tutor-message-form__input');
   input.id = 'tutor-message-input';
-  input.rows = 4;
+  input.rows = 2;
+  input.dataset.maxRows = '10';
   input.maxLength = 4000;
   input.placeholder = 'พิมพ์สิ่งที่สงสัย หรือให้บริบทเพิ่มเติม…';
   input.setAttribute('aria-label', 'พิมพ์คำถามหรือคำตอบเพิ่มเติม');
+  input.addEventListener('input', () => resizeTutorTextarea(input));
+  resizeTutorTextarea(input);
   input.dataset.role = 'tutor-input';
   inputLabel.htmlFor = input.id;
-  const tagDetails = element('details', 'tutor-tag-details');
-  const tagSummary = element('summary', '', 'เพิ่มแท็กวิชาหรือหัวข้อ (ไม่บังคับ)');
   const selectedTagIds = new Set();
   let tagPicker;
-  const tagPickerContainer = element('div', 'tutor-tag-details__content');
+  const tagDialogLayer = element('div', 'tutor-tag-dialog-layer');
+  tagDialogLayer.hidden = true;
+  tagDialogLayer.dataset.role = 'tutor-tag-dialog-layer';
+  const tagDialog = element('section', 'tutor-tag-dialog');
+  tagDialog.id = 'tutor-tag-dialog';
+  tagDialog.dataset.role = 'tutor-tag-dialog';
+  tagDialog.setAttribute('role', 'dialog');
+  tagDialog.setAttribute('aria-modal', 'true');
+  tagDialog.setAttribute('aria-labelledby', 'tutor-tag-dialog-title');
+  const tagDialogHeader = element('div', 'tutor-tag-dialog__header');
+  const tagDialogTitle = element('h2', '', 'เลือกวิชาและหัวข้อ');
+  tagDialogTitle.id = 'tutor-tag-dialog-title';
+  const tagDialogClose = element('button', 'button button-secondary tutor-tag-dialog__close', '×');
+  tagDialogClose.type = 'button';
+  tagDialogClose.dataset.action = 'close-tutor-tag-dialog';
+  tagDialogClose.setAttribute('aria-label', 'ปิดหน้าต่างเลือกวิชาและหัวข้อ');
+  tagDialogHeader.append(tagDialogTitle, tagDialogClose);
+  const tagDialogHint = element('p', 'tutor-tag-dialog__hint', 'เลือกแท็กที่ต้องการใช้กับคำถามใหม่');
+  tagDialogHint.hidden = true;
+  const tagPickerContainer = element('div', 'tutor-tag-dialog__content');
   tagPicker = renderTagPicker({
     catalog: tagCatalog,
     onToggle: (id, selected) => {
@@ -239,8 +376,22 @@ export function renderTutorPage({
       else selectedTagIds.delete(id);
     },
   });
+  const tagPickerSearch = tagPicker.querySelector('.tag-picker-search');
+  if (tagPickerSearch) {
+    tagPickerSearch.setAttribute('aria-label', 'ค้นหาวิชาและหัวข้อ');
+    tagPickerSearch.placeholder = 'ค้นหาวิชา หรือหัวข้อ';
+  }
+  const tagPickerList = tagPicker.querySelector('.tag-picker-groups');
+  if (tagPickerList) {
+    tagPickerList.classList.add('tutor-tag-dialog__chips');
+    tagPickerList.setAttribute('role', 'group');
+    tagPickerList.setAttribute('aria-label', 'รายการวิชาและหัวข้อ');
+  }
+  const tagCreateButton = tagPicker.querySelector('.tag-picker-create');
+  if (tagCreateButton) tagCreateButton.hidden = true;
   tagPickerContainer.append(tagPicker);
-  tagDetails.append(tagSummary, tagPickerContainer);
+  tagDialog.append(tagDialogHeader, tagDialogHint, tagPickerContainer);
+  tagDialogLayer.append(tagDialog);
   const attachmentControls = element('div', 'tutor-attachment-controls');
   const attachmentInput = element('input', 'tutor-attachment-input');
   attachmentInput.type = 'file';
@@ -249,9 +400,10 @@ export function renderTutorPage({
   attachmentInput.hidden = true;
   attachmentInput.dataset.role = 'tutor-image-input';
   attachmentInput.setAttribute('aria-label', 'เลือกภาพประกอบคำถาม');
-  const attachmentButton = element('button', 'button button-secondary', 'แนบภาพ');
+  const attachmentButton = element('button', 'button button-secondary tutor-attach-button', '+');
   attachmentButton.type = 'button';
   attachmentButton.dataset.action = 'choose-tutor-images';
+  attachmentButton.setAttribute('aria-label', 'แนบภาพ');
   attachmentControls.append(attachmentButton, attachmentInput);
   const attachmentPreviews = element('div', 'tutor-image-previews');
   attachmentPreviews.dataset.role = 'tutor-image-previews';
@@ -259,19 +411,115 @@ export function renderTutorPage({
   imageCapability.dataset.role = 'tutor-image-capability';
   imageCapability.setAttribute('role', 'status');
   imageCapability.setAttribute('aria-live', 'polite');
+  const composerControls = element('div', 'tutor-composer__controls');
+  const composerLeft = element('div', 'tutor-composer__left');
+  const contextTrigger = element('button', 'tutor-composer__context-trigger', '＋ วิชา / หัวข้อ');
+  contextTrigger.type = 'button';
+  contextTrigger.dataset.action = 'open-tutor-tag-picker';
+  contextTrigger.setAttribute('aria-label', 'เลือกวิชาและหัวข้อสำหรับคำถามใหม่');
+  contextTrigger.setAttribute('aria-haspopup', 'dialog');
+  contextTrigger.setAttribute('aria-expanded', 'false');
+  contextTrigger.setAttribute('aria-controls', tagDialog.id);
+  const responseLanguageLabel = element('label', 'tutor-response-language');
+  responseLanguageLabel.append(element('span', 'tutor-sr-only', 'ภาษาคำตอบ'), responseLanguageSelect);
+  composerLeft.append(attachmentControls, contextTrigger, responseLanguageLabel);
+  const providerTrigger = element('button', 'tutor-provider-trigger');
+  providerTrigger.type = 'button';
+  providerTrigger.dataset.action = 'open-tutor-model-picker';
+  providerTrigger.setAttribute('aria-haspopup', 'dialog');
+  providerTrigger.setAttribute('aria-expanded', 'false');
+  providerTrigger.setAttribute('aria-controls', modelPicker.id);
+  const providerTriggerLabel = element('span', 'tutor-provider-trigger__label', 'เลือก Provider');
+  const providerTriggerChevron = element('span', 'tutor-provider-trigger__chevron');
+  providerTriggerChevron.setAttribute('aria-hidden', 'true');
+  providerTrigger.append(providerTriggerLabel, providerTriggerChevron);
   const formActions = element('div', 'tutor-message-form__actions');
-  const submitButton = element('button', 'button button-primary', 'ส่งคำถาม');
+  const submitButton = element('button', 'button button-primary tutor-send-button');
   submitButton.type = 'submit';
   submitButton.dataset.action = 'send-tutor-message';
+  submitButton.setAttribute('aria-label', 'ส่งคำถาม');
+  submitButton.append(tutorRailIcon('send'));
   const retryButton = element('button', 'button button-secondary', 'ลองส่งใหม่');
   retryButton.type = 'button';
   retryButton.dataset.action = 'retry-tutor';
   retryButton.hidden = true;
-  formActions.append(attachmentControls, submitButton, retryButton);
-  form.append(modelControls, inputLabel, input, tagDetails, attachmentPreviews, imageCapability, formActions);
+  formActions.append(submitButton, retryButton);
+  composerControls.append(composerLeft, providerTrigger, formActions);
+  composer.append(modelPicker, inputLabel, input, attachmentPreviews, imageCapability, composerControls);
+
+  function openTagDialog() {
+    if (!modelPicker.hidden) closeModelPicker();
+    tagDialogLayer.hidden = false;
+    contextTrigger.setAttribute('aria-expanded', 'true');
+    const firstControl = tagPickerContainer.hidden
+      ? tagDialogClose
+      : tagPicker.querySelector('.tag-picker-search');
+    firstControl?.focus();
+  }
+
+  function closeTagDialog({ returnFocus = false } = {}) {
+    if (tagDialogLayer.hidden) return;
+    tagDialogLayer.hidden = true;
+    contextTrigger.setAttribute('aria-expanded', 'false');
+    if (returnFocus) contextTrigger.focus();
+  }
+
+  function closeHistoryPanel({ focusConversation = false, returnFocus = false } = {}) {
+    historyPanel.hidden = true;
+    historyToggle.setAttribute('aria-expanded', 'false');
+    historyToggle.setAttribute('aria-label', 'เปิดประวัติการถาม');
+    historyToggle.dataset.tooltip = 'เปิดประวัติการถาม';
+    layout.classList.remove('tutor-layout--history-open');
+    if (focusConversation) conversationTitle.focus();
+    else if (returnFocus) historyToggle.focus();
+  }
+
+  function openHistoryPanel() {
+    historyPanel.hidden = false;
+    historyToggle.setAttribute('aria-expanded', 'true');
+    historyToggle.setAttribute('aria-label', 'ปิดประวัติการถาม');
+    historyToggle.dataset.tooltip = 'ปิดประวัติการถาม';
+    layout.classList.add('tutor-layout--history-open');
+    searchInput.focus();
+  }
+
+  function setProviderChoiceMenuOpen(open) {
+    providerChoices.hidden = !open;
+    providerToggle.setAttribute('aria-expanded', String(open));
+    modelChoiceHeading.hidden = open;
+    modelChoiceList.hidden = open;
+    modelEmpty.hidden = open || modelChoiceList.childElementCount > 0;
+  }
+
+  function closeModelPicker({ returnFocus = false } = {}) {
+    modelPicker.hidden = true;
+    providerTrigger.setAttribute('aria-expanded', 'false');
+    setProviderChoiceMenuOpen(false);
+    if (returnFocus) providerTrigger.focus();
+  }
+
+  function openModelPicker() {
+    if (providerTrigger.disabled) return;
+    modelPicker.hidden = false;
+    providerTrigger.setAttribute('aria-expanded', 'true');
+    providerToggle.focus();
+    modelChoiceList.querySelector('.tutor-model-choice[aria-pressed="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  function toggleProviderChoices() {
+    if (providerToggle.disabled) return;
+    const open = providerChoices.hidden;
+    setProviderChoiceMenuOpen(open);
+    if (open) {
+      (providerChoices.querySelector('.tutor-provider-choice[aria-pressed="true"]')
+        || providerChoices.querySelector('.tutor-provider-choice'))?.focus();
+    }
+  }
+
+  form.append(composer);
   conversationPanel.append(conversationHeader, messages, form);
-  layout.append(historyPanel, conversationPanel);
-  page.append(header, pageMessage, layout);
+  layout.append(leftRail, historyPanel, conversationPanel);
+  page.append(title, pageMessage, layout, tagDialogLayer);
 
   let conversations = [];
   let activeConversation = null;
@@ -304,6 +552,32 @@ export function renderTutorPage({
     }
     providerSelect.disabled = isBusy || aiCatalog.providers.length === 0;
     providerSelect.value = selectedProviderId;
+    providerChoices.replaceChildren();
+    providerToggleLabel.textContent = currentProvider?.name || 'เลือก Provider';
+    providerToggle.disabled = isBusy || aiCatalog.providers.length === 0;
+    providerToggle.setAttribute('aria-label', `Provider ปัจจุบัน: ${currentProvider?.name || 'ยังไม่มี'} · เปลี่ยน Provider`);
+    for (const provider of aiCatalog.providers) {
+      const choice = element('button', 'tutor-provider-choice', provider.name);
+      choice.type = 'button';
+      choice.dataset.providerId = provider.id;
+      choice.setAttribute('aria-pressed', String(provider.id === selectedProviderId));
+      choice.disabled = isBusy;
+      choice.addEventListener('click', () => {
+        setProviderChoiceMenuOpen(false);
+        if (provider.id !== selectedProviderId) {
+          providerSelect.value = provider.id;
+          providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        providerToggle.focus();
+      });
+      providerChoices.append(choice);
+    }
+    providerTrigger.disabled = isBusy || aiCatalog.providers.length === 0;
+    providerTriggerLabel.textContent = currentProvider?.name || 'เลือก Provider';
+    const currentModelName = currentProvider?.models.find((model) => model.id === selectedModelId)?.name;
+    providerTrigger.setAttribute('aria-label', currentModelName
+      ? `${currentProvider.name} · ${currentModelName} · เปลี่ยน Provider หรือ Model`
+      : `${currentProvider?.name || 'เลือก Provider'} · เลือก Model`);
 
     const models = currentProvider?.models || [];
     const defaultModel = defaultSelection && defaultSelection.provider_id === currentProvider?.id
@@ -328,6 +602,27 @@ export function renderTutorPage({
     }
     modelSelect.disabled = isBusy || models.length === 0;
     modelSelect.value = selectedModelId;
+    modelChoiceList.replaceChildren();
+    for (const model of models) {
+      const choice = element('button', 'tutor-model-choice');
+      choice.type = 'button';
+      choice.dataset.modelId = model.id;
+      choice.setAttribute('aria-pressed', String(model.id === selectedModelId));
+      choice.disabled = isBusy || (hasSelectedAttachments() && !model.supports_images);
+      choice.append(element('span', 'tutor-model-choice__name', model.name || model.id));
+      if (model.id && model.name && model.id !== model.name) {
+        choice.append(element('span', 'tutor-model-choice__detail', model.id));
+      }
+      const selectedMark = element('span', 'tutor-model-choice__check', '✓');
+      selectedMark.setAttribute('aria-hidden', 'true');
+      choice.append(selectedMark);
+      choice.addEventListener('click', () => {
+        modelSelect.value = model.id;
+        modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      modelChoiceList.append(choice);
+    }
+    modelEmpty.hidden = models.length > 0 || !providerChoices.hidden;
     responseLanguageSelect.disabled = isBusy;
     responseLanguageSelect.value = selectedResponseLanguage;
   }
@@ -561,14 +856,16 @@ export function renderTutorPage({
     retryButton.hidden = !pendingSubmission || isBusy;
     retryButton.disabled = isBusy;
     providerSelect.disabled = isBusy || aiCatalog.providers.length === 0;
+    providerTrigger.disabled = isBusy || aiCatalog.providers.length === 0;
     modelSelect.disabled = isBusy || !selectedModelId;
     responseLanguageSelect.disabled = isBusy;
     responseLanguageSelect.value = selectedResponseLanguage;
     retryButton.textContent = statusValue === 'processing' ? 'ตรวจสอบสถานะ' : 'ลองส่งใหม่';
-    tagDetails.hidden = Boolean(activeConversationId);
-    submitButton.textContent = activeConversationId
+    tagPickerContainer.hidden = Boolean(activeConversationId);
+    tagDialogHint.hidden = !activeConversationId;
+    submitButton.setAttribute('aria-label', activeConversationId
       ? (awaitingClarification ? 'ส่งคำตอบ' : 'ส่งข้อความ')
-      : 'ส่งคำถาม';
+      : 'ส่งคำถาม');
     newConversationButton.disabled = isBusy;
     retryButton.dataset.requestId = pendingSubmission?.requestId || '';
     retryButton.dataset.conversationId = String(pendingSubmission?.conversationId || activeConversationId || '');
@@ -634,6 +931,7 @@ export function renderTutorPage({
         : null;
       setPageMessage('');
       renderConversation();
+      closeHistoryPanel({ focusConversation: true });
     } catch (error) {
       setPageMessage(error?.message || 'เปิดบทสนทนาไม่สำเร็จ กรุณาลองอีกครั้ง', true);
     }
@@ -702,7 +1000,10 @@ export function renderTutorPage({
         }
         : null;
       if (result.status !== 'retryable_error') {
-        if (input.value.trim() === submission.message) input.value = '';
+        if (input.value.trim() === submission.message) {
+          input.value = '';
+          resizeTutorTextarea(input);
+        }
         clearSelectedAttachments();
       }
       setPageMessage(result?.status === 'processing' ? 'คำถามกำลังประมวลผลอยู่ คุณตรวจสอบสถานะได้อีกครั้ง' : '');
@@ -750,7 +1051,7 @@ export function renderTutorPage({
     }
     if (!selectedProviderId || !selectedModelId) {
       setPageMessage('เลือกรายการ Provider และ Model ก่อนส่งคำถาม', true);
-      providerSelect.focus();
+      openModelPicker();
       return;
     }
     if (hasSelectedAttachments() && !selectedModelSupportsImages()) {
@@ -785,10 +1086,13 @@ export function renderTutorPage({
     responseLanguageSelect.value = selectedResponseLanguage;
     selectedTagIds.clear();
     tagPicker.setSelectedTagIds([]);
-    tagDetails.hidden = false;
+    tagPickerContainer.hidden = false;
+    tagDialogHint.hidden = true;
     input.value = '';
+    resizeTutorTextarea(input);
     setPageMessage('');
     renderConversation();
+    closeHistoryPanel();
   }
 
   searchForm.addEventListener('submit', (event) => {
@@ -814,6 +1118,7 @@ export function renderTutorPage({
   providerSelect.addEventListener('change', () => {
     selectedProviderId = providerSelect.value;
     selectedModelId = '';
+    setProviderChoiceMenuOpen(false);
     renderModelControls();
     renderAttachmentCapability();
   });
@@ -821,11 +1126,72 @@ export function renderTutorPage({
     selectedModelId = modelSelect.value;
     renderModelControls();
     renderAttachmentCapability();
+    closeModelPicker({ returnFocus: true });
+  });
+  providerTrigger.addEventListener('click', openModelPicker);
+  providerToggle.addEventListener('click', toggleProviderChoices);
+  modelPickerClose.addEventListener('click', () => closeModelPicker({ returnFocus: true }));
+  contextTrigger.addEventListener('click', openTagDialog);
+  tagDialogClose.addEventListener('click', () => closeTagDialog({ returnFocus: true }));
+  tagDialogLayer.addEventListener('click', (event) => {
+    if (event.target === tagDialogLayer) closeTagDialog({ returnFocus: true });
+  });
+  page.addEventListener('click', (event) => {
+    const clickPath = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    const clickedInsidePicker = clickPath.includes(modelPicker) || modelPicker.contains(event.target);
+    if (!modelPicker.hidden && !clickedInsidePicker && !providerTrigger.contains(event.target)) {
+      closeModelPicker();
+    }
   });
   responseLanguageSelect.addEventListener('change', () => {
     selectedResponseLanguage = responseLanguageSelect.value === 'en' ? 'en' : 'th';
   });
   newConversationButton.addEventListener('click', startNewConversation);
+  historyToggle.addEventListener('click', () => {
+    if (historyPanel.hidden) openHistoryPanel();
+    else closeHistoryPanel({ returnFocus: true });
+  });
+  historyClose.addEventListener('click', () => closeHistoryPanel({ returnFocus: true }));
+  page.addEventListener('keydown', (event) => {
+    if (!tagDialogLayer.hidden && event.key === 'Tab') {
+      const focusable = [...tagDialog.querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+        .filter((control) => !control.closest('[hidden]'))
+        .sort((first, second) => {
+          if (first === second) return 0;
+          return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+        });
+      if (!focusable.length) {
+        event.preventDefault();
+        tagDialogClose.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !tagDialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !tagDialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    if (!tagDialogLayer.hidden) {
+      event.preventDefault();
+      closeTagDialog({ returnFocus: true });
+      return;
+    }
+    if (!modelPicker.hidden) {
+      event.preventDefault();
+      closeModelPicker({ returnFocus: true });
+      return;
+    }
+    if (!historyPanel.hidden) {
+      event.preventDefault();
+      closeHistoryPanel({ returnFocus: true });
+    }
+  });
 
   void refreshHistory();
   void reloadTagCatalog().catch((error) => {

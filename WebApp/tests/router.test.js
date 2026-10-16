@@ -6,6 +6,17 @@ import { resolveRoute } from '../src/router.js';
 import * as router from '../src/router.js';
 
 describe('resolveRoute', () => {
+  it('applies Tutor-only app chrome without leaking that mode to another route', () => {
+    const app = document.createElement('div');
+    expect(router.applyTutorAppMode).toBeTypeOf('function');
+
+    router.applyTutorAppMode(app, true);
+    expect(app.classList.contains('app--tutor')).toBe(true);
+
+    router.applyTutorAppMode(app, false);
+    expect(app.classList.contains('app--tutor')).toBe(false);
+  });
+
   it('test_route_page_gets_one_entry_marker', () => {
     expect(router.markRoutePage).toBeTypeOf('function');
     const app = document.createElement('main');

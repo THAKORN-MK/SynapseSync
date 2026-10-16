@@ -329,7 +329,7 @@ describe('quiz library and detail pages', () => {
     await flushPromises();
 
     expect(page.querySelector('[aria-label="ค้นหาชื่อข้อสอบหรือ tag"]')).toBeTruthy();
-    expect(page.querySelector('[aria-label="Filter quizzes by tag"]')).toBeTruthy();
+    expect(page.querySelector('[aria-label="กรองตามวิชาและแท็ก"]')).toBeTruthy();
     expect(page.querySelector('[data-quiz-id="12"] .tag-chip-list').textContent).toContain('Sets');
   });
 
@@ -374,7 +374,7 @@ describe('quiz library and detail pages', () => {
     await flushPromises();
 
     const search = page.querySelector('[aria-label="ค้นหาชื่อข้อสอบหรือ tag"]');
-    const filter = page.querySelector('[aria-label="Filter quizzes by tag"]');
+    const filter = page.querySelector('[aria-label="กรองตามวิชาและแท็ก"]');
     search.value = 'sets';
     filter.value = '1';
     filter.dispatchEvent(new Event('change', { bubbles: true }));
@@ -543,9 +543,11 @@ describe('quiz library and detail pages', () => {
     secondSearch.value = 'algebra';
     secondSearch.dispatchEvent(new Event('input', { bubbles: true }));
 
-    const firstPickerName = firstPicker.querySelector('[aria-label="New topic tag name"]');
+    firstPicker.querySelector('[data-action="open-tag-create"]').click();
+    const createDialog = document.querySelector('.tag-create-dialog');
+    const firstPickerName = createDialog.querySelector('[aria-label="New topic tag name"]');
     firstPickerName.value = 'Algebra';
-    firstPicker.querySelector('[data-action="create-tag"]').click();
+    createDialog.querySelector('[data-action="create-tag"]').click();
     await flushPromises();
 
     expect(secondPicker.querySelector('button[data-tag-id="9"]')?.textContent).toBe('Algebra');
@@ -595,11 +597,13 @@ describe('quiz library and detail pages', () => {
     await flushPromises();
     page.querySelector('[data-action="manage-tags"]').click();
     let picker = page.querySelector('[data-role="tag-picker"]');
-    picker.querySelector('[aria-label="New topic tag name"]').value = ' Algebra ';
-    const pink = picker.querySelector('.tag-picker-create input[value="pink"]');
+    picker.querySelector('[data-action="open-tag-create"]').click();
+    const createDialog = document.querySelector('.tag-create-dialog');
+    createDialog.querySelector('[aria-label="New topic tag name"]').value = ' Algebra ';
+    const pink = createDialog.querySelector('.tag-color-palette input[value="pink"]');
     pink.checked = true;
     pink.dispatchEvent(new Event('change', { bubbles: true }));
-    picker.querySelector('[data-action="create-tag"]').click();
+    createDialog.querySelector('[data-action="create-tag"]').click();
     await flushPromises();
 
     expect(createTag).toHaveBeenCalledWith({ name: 'Algebra', color: 'pink' });
@@ -624,8 +628,10 @@ describe('quiz library and detail pages', () => {
     await flushPromises();
     page.querySelector('[data-action="manage-tags"]').click();
     let picker = page.querySelector('[data-role="tag-picker"]');
-    picker.querySelector('[aria-label="New topic tag name"]').value = 'Algebra';
-    picker.querySelector('[data-action="create-tag"]').click();
+    picker.querySelector('[data-action="open-tag-create"]').click();
+    const createDialog = document.querySelector('.tag-create-dialog');
+    createDialog.querySelector('[aria-label="New topic tag name"]').value = 'Algebra';
+    createDialog.querySelector('[data-action="create-tag"]').click();
     await flushPromises();
     await flushPromises();
 
@@ -666,10 +672,13 @@ describe('quiz library and detail pages', () => {
     await flushPromises();
     page.querySelector('[data-action="manage-tags"]').click();
     const picker = page.querySelector('[data-role="tag-picker"]');
-    picker.querySelector('[aria-label="New topic tag name"]').value = 'Algebra';
-    picker.querySelector('[data-action="create-tag"]').click();
+    picker.querySelector('[data-action="open-tag-create"]').click();
+    const createDialog = document.querySelector('.tag-create-dialog');
+    createDialog.querySelector('[aria-label="New topic tag name"]').value = 'Algebra';
+    createDialog.querySelector('[data-action="create-tag"]').click();
     await flushPromises();
     expect(page.querySelector('[role="alert"]').textContent).toContain('สร้างแท็กไม่สำเร็จ');
+    document.querySelector('.tag-create-dialog [data-action="cancel-tag-create"]').click();
   });
 
   it('shows newest-first attempt history with scores and start/review navigation', async () => {

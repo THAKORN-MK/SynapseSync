@@ -334,6 +334,10 @@ export function getDocumentContent(documentId, options) {
   return requestBlob(`/documents/${documentPathId(documentId)}/content`, options);
 }
 
+export function getDocumentDownloadUrl(documentId, { basePath = defaultBasePath } = {}) {
+  return `${normalizeBasePath(basePath)}/documents/${documentPathId(documentId)}/download`;
+}
+
 export function getDocumentText(documentId, options) {
   return requestJson(`/documents/${documentPathId(documentId)}/text`, options);
 }

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from starlette.responses import FileResponse
 
 from app.models import User
 from app.routers.auth import _public_user, get_current_user, get_db, require_same_origin
 from app.schemas.auth import PublicUser
+from app.storage.providers import FileStorageProvider, StorageProviderError
 from app.storage.profile_images import (
     AvatarTooLargeError,
     InvalidAvatarError,
-    validate_and_store_avatar,
+    validate_avatar_upload,
 )
 
 router = APIRouter(tags=["profile"])
@@ -86,22 +85,38 @@ def upload_profile_avatar(
 ) -> dict[str, object]:
     require_same_origin(request)
     try:
-        storage_key = validate_and_store_avatar(file, request.app.state.image_storage_dir)
+        avatar = validate_avatar_upload(file)
     except AvatarTooLargeError as error:
         raise HTTPException(status_code=413, detail=str(error)) from error
     except InvalidAvatarError as error:
         raise HTTPException(status_code=415, detail=str(error)) from error
 
+    storage: FileStorageProvider = request.app.state.storage_provider
+    storage_key = storage.new_key(user.id, avatar.suffix)
+    try:
+        storage.put("profile-avatars", storage_key, avatar.content, avatar.content_type)
+    except (StorageProviderError, OSError) as error:
+        raise HTTPException(status_code=503, detail="ไม่สามารถบันทึกภาพโปรไฟล์ได้ชั่วคราว") from error
+
     previous_key = user.avatar_key
     user.avatar_key = storage_key
     session.add(user)
-    session.commit()
-    session.refresh(user)
+    try:
+        session.commit()
+    except SQLAlchemyError as error:
+        session.rollback()
+        try:
+            storage.delete("profile-avatars", storage_key)
+        except (StorageProviderError, OSError):
+            pass
+        raise HTTPException(status_code=500, detail="ไม่สามารถบันทึกข้อมูลโปรไฟล์ได้") from error
 
-    if previous_key:
-        previous_path = Path(request.app.state.image_storage_dir) / previous_key
-        if previous_path.name == previous_key:
-            previous_path.unlink(missing_ok=True)
+    if previous_key and previous_key != storage_key:
+        try:
+            storage.delete("profile-avatars", previous_key)
+        except (StorageProviderError, OSError):
+            # The new avatar is already committed; a failed cleanup must not undo it.
+            pass
     return _public_user(user)
 
 
@@ -113,15 +128,27 @@ def get_profile_avatar(
     if not user.avatar_key:
         raise HTTPException(status_code=404, detail="ยังไม่มีภาพโปรไฟล์")
 
-    image_path = Path(request.app.state.image_storage_dir) / user.avatar_key
-    if image_path.name != user.avatar_key or not image_path.is_file():
-        raise HTTPException(status_code=404, detail="ไม่พบภาพโปรไฟล์")
-
+    storage: FileStorageProvider = request.app.state.storage_provider
+    suffix = f".{user.avatar_key.rsplit('.', 1)[-1].lower()}" if "." in user.avatar_key else ""
     media_type = {
         ".jpg": "image/jpeg",
         ".png": "image/png",
         ".webp": "image/webp",
-    }.get(image_path.suffix.lower())
+    }.get(suffix)
     if media_type is None:
         raise HTTPException(status_code=404, detail="ไม่พบภาพโปรไฟล์")
-    return FileResponse(image_path, media_type=media_type)
+    try:
+        content = storage.read("profile-avatars", user.avatar_key)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ไม่พบภาพโปรไฟล์") from error
+    except (StorageProviderError, OSError) as error:
+        raise HTTPException(status_code=503, detail="ไม่สามารถโหลดภาพโปรไฟล์ได้ชั่วคราว") from error
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )

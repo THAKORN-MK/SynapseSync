@@ -122,7 +122,8 @@ describe('deadline planner page', () => {
 
   it('creates a task with the selected fields and resets the form on success', async () => {
     const createDeadline = vi.fn().mockImplementation(async (payload) => task({ ...payload, id: 8 }));
-    const { page } = renderPage({ createDeadline });
+    const onDeadlineCreated = vi.fn();
+    const { page } = renderPage({ createDeadline, onDeadlineCreated });
     await flushPromises();
 
     page.querySelector('[data-role="title-input"]').value = '  เตรียมสอบกลางภาค  ';
@@ -141,6 +142,7 @@ describe('deadline planner page', () => {
     });
     expect(page.querySelector('[data-role="title-input"]').value).toBe('');
     expect(taskIds(page)).toEqual([8]);
+    expect(onDeadlineCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }));
   });
 
   it.each([0, -3])('rejects a successful API response with invalid task ID %s', async (id) => {
@@ -193,16 +195,61 @@ describe('deadline planner page', () => {
     expect(card.querySelector('[data-role="deadline-priority"]').textContent).toBe('ด่วน');
   });
 
-  it('sorts tasks by nearest deadline before rendering', async () => {
+  it('sorts tasks by newest creation time before rendering', async () => {
     const { page } = renderPage({
       loadDeadlines: vi.fn().mockResolvedValue([
-        task({ id: 12, title: 'Later', due_at: '2026-11-20T09:00:00Z' }),
-        task({ id: 11, title: 'Sooner', due_at: '2026-11-10T09:00:00Z' }),
+        task({ id: 1, title: 'Newest', created_at: '2026-10-12T09:00:00Z', due_at: '2026-11-20T09:00:00Z' }),
+        task({ id: 3, title: 'Oldest', created_at: '2026-10-08T09:00:00Z', due_at: '2026-10-09T09:00:00Z' }),
+        task({ id: 2, title: 'Middle', created_at: '2026-10-10T09:00:00Z', due_at: '2026-10-10T09:00:00Z' }),
       ]),
     });
     await flushPromises();
 
-    expect(taskIds(page)).toEqual([11, 12]);
+    expect(taskIds(page)).toEqual([1, 2, 3]);
+  });
+
+  it('shows ten newest tasks per page and navigates through the remaining tasks', async () => {
+    const tasks = Array.from({ length: 12 }, (_, index) => task({
+      id: index + 1,
+      title: `Assignment ${index + 1}`,
+      created_at: new Date(Date.UTC(2026, 9, index + 1)).toISOString(),
+    }));
+    const { page } = renderPage({ loadDeadlines: vi.fn().mockResolvedValue(tasks) });
+    await flushPromises();
+
+    expect(taskIds(page)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+    expect(page.querySelector('[data-role="deadline-pagination"]').textContent).toContain('หน้า 1 จาก 2');
+    expect(page.querySelector('[data-action="previous-page"]').disabled).toBe(true);
+
+    page.querySelector('[data-action="next-page"]').click();
+    expect(taskIds(page)).toEqual([2, 1]);
+    expect(page.querySelector('[data-role="deadline-pagination"]').textContent).toContain('หน้า 2 จาก 2');
+    expect(page.querySelector('[data-action="next-page"]').disabled).toBe(true);
+
+    page.querySelector('[data-action="previous-page"]').click();
+    expect(taskIds(page)).toHaveLength(10);
+    expect(page.querySelector('[data-role="deadline-pagination"]').textContent).toContain('หน้า 1 จาก 2');
+  });
+
+  it('resets pagination to the first page when the task filter changes', async () => {
+    const tasks = Array.from({ length: 12 }, (_, index) => task({
+      id: index + 1,
+      created_at: new Date(Date.UTC(2026, 9, index + 1)).toISOString(),
+      is_completed: index < 2,
+    }));
+    const { page } = renderPage({ loadDeadlines: vi.fn().mockResolvedValue(tasks) });
+    await flushPromises();
+
+    page.querySelector('[data-action="next-page"]').click();
+    expect(page.querySelector('[data-role="deadline-pagination"]').textContent).toContain('หน้า 2 จาก 2');
+
+    page.querySelector('[data-filter="completed"]').click();
+    expect(taskIds(page)).toEqual([2, 1]);
+    expect(page.querySelector('[data-role="deadline-pagination"]')).toBeNull();
+
+    page.querySelector('[data-filter="incomplete"]').click();
+    expect(taskIds(page)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+    expect(page.querySelector('[data-role="deadline-pagination"]')).toBeNull();
   });
 
   it('filters all, incomplete, and completed tasks and shows a filter-specific empty state', async () => {
@@ -216,11 +263,11 @@ describe('deadline planner page', () => {
     await flushPromises();
 
     page.querySelector('[data-filter="incomplete"]').click();
-    expect(taskIds(page)).toEqual([1, 3]);
+    expect(taskIds(page)).toEqual([3, 1]);
     page.querySelector('[data-filter="completed"]').click();
     expect(taskIds(page)).toEqual([2]);
     page.querySelector('[data-filter="all"]').click();
-    expect(taskIds(page)).toEqual([1, 2, 3]);
+    expect(taskIds(page)).toEqual([3, 2, 1]);
 
     const { page: noMatches } = renderPage({ loadDeadlines: vi.fn().mockResolvedValue([task()]) });
     await flushPromises();
@@ -307,7 +354,7 @@ describe('deadline planner page', () => {
     page.querySelector('[data-task-id="1"] [data-action="delete-deadline"]').click();
     await flushPromises();
 
-    expect(taskIds(page)).toEqual([1, 2]);
+    expect(taskIds(page)).toEqual([2, 1]);
     expect(page.querySelector('[data-role="deadline-message"]').textContent).toContain('ลบไม่ได้');
   });
 
@@ -344,6 +391,7 @@ describe('deadline planner page', () => {
     expect(getComputedStyle(layout).display).toBe('grid');
     expect(getComputedStyle(layout).gridTemplateColumns).toContain('minmax');
     expect(readFileSync('src/styles.css', 'utf8')).toMatch(/\.deadline-panel\s*\{[^}]*var\(--(?:surface|glass|line|ink|muted|accent)/s);
+    expect(readFileSync('src/styles.css', 'utf8')).toMatch(/\.deadline-task-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
     expect(readFileSync('src/styles.css', 'utf8')).toMatch(/@media \(max-width: 800px\)[\s\S]*?\.deadline-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     styles.remove();
   });

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from docx import Document as WordDocument
 from pypdf import PdfWriter
 
 from app.services.document_library import (
@@ -29,19 +27,12 @@ def test_document_model_registers_private_document_and_existing_tag_association(
     assert "document_tags" in Document.metadata.tables
 
 
-def test_rejects_docx_with_oversized_expanded_document_xml_before_parsing():
-    xml = (
-        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        b"<w:body><w:p><w:r><w:t>"
-        + b"x" * 10_000_001
-        + b"</w:t></w:r></w:p></w:body></w:document>"
-    )
-    archive = BytesIO()
-    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as docx:
-        docx.writestr("word/document.xml", xml)
+@pytest.mark.parametrize("filename", ["notes.docx", "notes.DOCX"])
+def test_document_library_rejects_docx_uploads_case_insensitively(filename):
+    with pytest.raises(UnsupportedDocumentError) as error:
+        extract_library_text(filename, b"not a DOCX file")
 
-    with pytest.raises(InvalidDocumentError):
-        extract_library_text("expanded.docx", archive.getvalue())
+    assert "PDF, Markdown, and TXT" in str(error.value)
 
 
 def test_extracts_markdown_for_reading_and_search_without_quiz_token_limit():
@@ -61,22 +52,6 @@ def test_extracts_utf8_text_and_normalizes_line_endings():
 
     assert result.extracted_text == "First line\nSecond line"
     assert result.search_text == "First line\nSecond line"
-
-
-def test_extracts_docx_paragraphs_and_table_cells():
-    document = WordDocument()
-    document.add_paragraph("Paragraph one")
-    table = document.add_table(rows=1, cols=2)
-    table.cell(0, 0).text = "Cell A"
-    table.cell(0, 1).text = "Cell B"
-    data = BytesIO()
-    document.save(data)
-
-    result = extract_library_text("notes.docx", data.getvalue())
-
-    assert result.file_type == "docx"
-    assert "Paragraph one" in result.extracted_text
-    assert "Cell A | Cell B" in result.extracted_text
 
 
 def test_extracts_pdf_text_and_accepts_valid_pdf_without_extractable_text():
@@ -719,7 +694,6 @@ def test_rejects_unsupported_document_extensions(filename: str):
         ("empty.txt", b""),
         ("empty.md", b" \n \t"),
         ("broken.pdf", b"not a pdf"),
-        ("broken.docx", b"not a zip archive"),
         ("binary.txt", b"\x00\xff"),
     ],
 )

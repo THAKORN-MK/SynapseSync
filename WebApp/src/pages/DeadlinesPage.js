@@ -21,6 +21,7 @@ const TASK_STATUSES = [
   { id: 'in_progress', label: 'กำลังทำ' },
   { id: 'completed', label: 'เสร็จแล้ว' },
 ];
+const TASKS_PER_PAGE = 10;
 
 function element(tagName, className, text) {
   const node = document.createElement(tagName);
@@ -50,13 +51,15 @@ function formatDateTime(value) {
     : new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-function sortByDueDate(tasks) {
+function sortByCreatedAt(tasks) {
   return [...tasks].sort((left, right) => {
-    const leftDate = new Date(left.due_at).getTime();
-    const rightDate = new Date(right.due_at).getTime();
-    const dateDifference = (Number.isFinite(leftDate) ? leftDate : Number.MAX_SAFE_INTEGER)
-      - (Number.isFinite(rightDate) ? rightDate : Number.MAX_SAFE_INTEGER);
-    return dateDifference || Number(left.id) - Number(right.id);
+    const leftDate = new Date(left.created_at).getTime();
+    const rightDate = new Date(right.created_at).getTime();
+    const leftHasDate = Number.isFinite(leftDate);
+    const rightHasDate = Number.isFinite(rightDate);
+    if (leftHasDate && rightHasDate && leftDate !== rightDate) return rightDate - leftDate;
+    if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1;
+    return Number(right.id) - Number(left.id);
   });
 }
 
@@ -144,6 +147,7 @@ export function renderDeadlinesPage({
   createDeadline = createDeadlineRequest,
   updateDeadline = updateDeadlineRequest,
   deleteDeadline = deleteDeadlineRequest,
+  onDeadlineCreated = () => {},
   confirmDelete = (message) => window.confirm(message),
   now = () => new Date(),
 } = {}) {
@@ -265,6 +269,9 @@ export function renderDeadlinesPage({
   filterGroup.setAttribute('aria-label', 'กรองรายการงาน');
   const taskList = element('div', 'deadline-task-list');
   taskList.dataset.role = 'deadline-list';
+  const pagination = element('nav', 'deadline-pagination');
+  pagination.dataset.role = 'deadline-pagination';
+  pagination.setAttribute('aria-label', 'แบ่งหน้ารายการงาน');
   listPanel.append(listHeading, filterGroup, taskList);
   taskColumn.append(weekPanel, listPanel);
   layout.append(createPanel, taskColumn);
@@ -272,6 +279,7 @@ export function renderDeadlinesPage({
 
   let tasks = [];
   let currentFilter = 'all';
+  let currentPage = 1;
   let loading = true;
   let loadFailed = false;
   let creating = false;
@@ -318,10 +326,49 @@ export function renderDeadlinesPage({
   }
 
   function getVisibleTasks() {
-    const sorted = sortByDueDate(tasks);
+    const sorted = sortByCreatedAt(tasks);
     if (currentFilter === 'incomplete') return sorted.filter((task) => taskStatus(task) !== 'completed');
     if (currentFilter === 'completed') return sorted.filter((task) => taskStatus(task) === 'completed');
     return sorted;
+  }
+
+  function renderPagination(totalCount) {
+    const pageCount = Math.ceil(totalCount / TASKS_PER_PAGE);
+    if (pageCount < 2) {
+      pagination.replaceChildren();
+      pagination.remove();
+      return;
+    }
+
+    currentPage = Math.min(currentPage, pageCount);
+    const previous = element('button', 'button button-secondary', 'ก่อนหน้า');
+    previous.type = 'button';
+    previous.dataset.action = 'previous-page';
+    previous.disabled = currentPage === 1;
+    previous.addEventListener('click', () => {
+      currentPage -= 1;
+      renderTasks();
+    });
+
+    const status = element('span', 'deadline-pagination__status', `หน้า ${currentPage} จาก ${pageCount}`);
+    status.setAttribute('aria-live', 'polite');
+
+    const next = element('button', 'button button-secondary', 'ถัดไป');
+    next.type = 'button';
+    next.dataset.action = 'next-page';
+    next.disabled = currentPage === pageCount;
+    next.addEventListener('click', () => {
+      currentPage += 1;
+      renderTasks();
+    });
+
+    pagination.replaceChildren(previous, status, next);
+    listPanel.append(pagination);
+  }
+
+  function clearPagination() {
+    pagination.replaceChildren();
+    pagination.remove();
   }
 
   function renderEmptyState(text, canRetry = false) {
@@ -341,10 +388,12 @@ export function renderDeadlinesPage({
   function renderTasks() {
     if (loading) {
       taskList.replaceChildren(element('p', 'deadline-loading', 'กำลังโหลดรายการงาน…'));
+      clearPagination();
       return;
     }
     if (loadFailed && tasks.length === 0) {
       renderEmptyState('โหลดรายการงานไม่สำเร็จ', true);
+      clearPagination();
       return;
     }
     const visible = getVisibleTasks();
@@ -357,9 +406,15 @@ export function renderDeadlinesPage({
             ? 'ไม่มีงานที่ยังไม่เสร็จ'
             : 'ไม่พบงาน';
       renderEmptyState(text);
+      clearPagination();
       return;
     }
-    taskList.replaceChildren(...visible.map((task) => makeTaskCard(task, {
+    const pageCount = Math.ceil(visible.length / TASKS_PER_PAGE);
+    currentPage = Math.min(currentPage, pageCount);
+    renderPagination(visible.length);
+    const firstIndex = (currentPage - 1) * TASKS_PER_PAGE;
+    const pageTasks = visible.slice(firstIndex, firstIndex + TASKS_PER_PAGE);
+    taskList.replaceChildren(...pageTasks.map((task) => makeTaskCard(task, {
       pending: pendingIds.has(Number(task.id)),
       onToggle: toggleCompletion,
       onStatusChange: changeTaskStatus,
@@ -375,6 +430,7 @@ export function renderDeadlinesPage({
       button.setAttribute('aria-pressed', String(currentFilter === filter.id));
       button.addEventListener('click', () => {
         currentFilter = filter.id;
+        currentPage = 1;
         renderFilters();
         renderTasks();
       });
@@ -414,6 +470,7 @@ export function renderDeadlinesPage({
   async function refreshTasks() {
     loading = true;
     loadFailed = false;
+    currentPage = 1;
     renderTasks();
     setMessage('');
     try {
@@ -535,12 +592,14 @@ export function renderDeadlinesPage({
       if (!created || !Number.isSafeInteger(created.id) || created.id <= 0) {
         throw new Error('บันทึกงานไม่สำเร็จ กรุณาลองอีกครั้ง');
       }
-      tasks = sortByDueDate([...tasks, { ...created }]);
+      tasks = sortByCreatedAt([...tasks, { ...created }]);
+      currentPage = 1;
       loadFailed = false;
       form.reset();
       setMessage('เพิ่มงานลงในรายการแล้ว');
       renderTasks();
       renderWeek();
+      onDeadlineCreated(created);
     } catch (error) {
       setMessage(error?.message || 'บันทึกงานไม่สำเร็จ กรุณาลองอีกครั้ง', true);
     } finally {

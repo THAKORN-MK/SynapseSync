@@ -13,6 +13,11 @@ export function markRoutePage(page, routeUrl, previousRouteUrl, reducedMotion = 
   return typeof routeUrl === 'string' ? routeUrl : previousRouteUrl ?? null;
 }
 
+export function applyTutorAppMode(appRoot, isTutor) {
+  if (!appRoot?.classList) return;
+  appRoot.classList.toggle('app--tutor', Boolean(isTutor));
+}
+
 function normalizePath(pathname) {
   const path = typeof pathname === 'string' && pathname.startsWith('/') ? pathname : '/';
   return path.length > 1 ? path.replace(/\/+$/, '') || '/' : path;

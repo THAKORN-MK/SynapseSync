@@ -4,10 +4,42 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 from sqlalchemy import func, select
 from starlette.formparsers import MultiPartParser
 
 from app.models import Document, Tag
+from app.storage.providers import StorageProviderError
+
+
+class _MemoryStorageProvider:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], tuple[bytes, str]] = {}
+        self.put_calls: list[tuple[str, str, str]] = []
+        self.read_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
+        self.fail_put = False
+
+    def new_key(self, owner_id: int, suffix: str = "") -> str:
+        return f"{owner_id}/object-{len(self.put_calls) + 1}{suffix}"
+
+    def put(self, bucket: str, key: str, content: bytes, content_type: str) -> None:
+        self.put_calls.append((bucket, key, content_type))
+        if self.fail_put:
+            raise StorageProviderError("provider is unavailable")
+        self.objects[(bucket, key)] = (content, content_type)
+
+    def read(self, bucket: str, key: str) -> bytes:
+        self.read_calls.append((bucket, key))
+        try:
+            return self.objects[(bucket, key)][0]
+        except KeyError as error:
+            raise FileNotFoundError from error
+
+    def delete(self, bucket: str, key: str) -> None:
+        self.delete_calls.append((bucket, key))
+        self.objects.pop((bucket, key), None)
 
 
 def _new_client(client_factory, tmp_path: Path):
@@ -189,6 +221,41 @@ def test_upload_stores_private_original_and_extracted_text_for_search_and_readin
         "search_available": True,
     }
     assert [match["id"] for match in matches.json()] == [item["id"]]
+
+
+def test_document_library_rejects_docx_uploads_without_storing_them(client_factory, tmp_path):
+    from io import BytesIO
+
+    from docx import Document as WordDocument
+    from docx.oxml import OxmlElement
+
+    document = WordDocument()
+    control = OxmlElement("w:sdt")
+    content = OxmlElement("w:sdtContent")
+    paragraph = OxmlElement("w:p")
+    run = OxmlElement("w:r")
+    text = OxmlElement("w:t")
+    text.text = "A lesson stored in a Word content control."
+    run.append(text)
+    paragraph.append(run)
+    content.append(paragraph)
+    control.append(content)
+    document.element.body.insert(0, control)
+    data = BytesIO()
+    document.save(data)
+
+    with _new_client(client_factory, tmp_path) as client:
+        _register(client)
+        uploaded = _upload(client, "controlled.docx", data.getvalue())
+
+        with client.app.state.session_factory() as session:
+            count = session.scalar(select(func.count(Document.id)))
+
+    assert uploaded.status_code == 415
+    assert "PDF, Markdown, and TXT" in uploaded.json()["detail"]
+    assert count == 0
+    assert list((tmp_path / "documents").iterdir()) == []
+    assert list((tmp_path / "document-staging").iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -508,6 +575,128 @@ def test_pdf_content_has_safe_headers_and_delete_removes_record_and_file(client_
     assert deleted.status_code == 204
     assert not file_path.exists()
     assert after.status_code == 404
+
+
+def test_pdf_download_returns_original_bytes_with_encoded_safe_filename(client_factory):
+    pdf = (Path(__file__).parent / "fixtures" / "tiny-text.pdf").read_bytes()
+    filename = "ชีวะ & สังคม.pdf"
+    with client_factory() as client:
+        _register(client)
+        document = _upload(client, filename, pdf).json()
+
+        downloaded = client.get(f"/api/documents/{document['id']}/download")
+
+    assert downloaded.status_code == 200
+    assert downloaded.content == pdf
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+    assert downloaded.headers["content-disposition"] == (
+        'attachment; filename="document.pdf"; filename*=UTF-8\'\'%E0%B8%8A%E0%B8%B5%E0%B8%A7%E0%B8%B0%20%26%20'
+        '%E0%B8%AA%E0%B8%B1%E0%B8%87%E0%B8%84%E0%B8%A1.pdf'
+    )
+    assert downloaded.headers["cache-control"] == "private, no-store"
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
+
+
+def test_pdf_download_requires_session_and_document_ownership(client_factory):
+    pdf = (Path(__file__).parent / "fixtures" / "tiny-text.pdf").read_bytes()
+    with client_factory() as owner, client_factory() as other_user, client_factory() as anonymous:
+        _register(owner, "download-owner@example.com")
+        document = _upload(owner, "lesson.pdf", pdf).json()
+        _register(other_user, "download-other@example.com")
+
+        unauthenticated = anonymous.get(f"/api/documents/{document['id']}/download")
+        foreign = other_user.get(f"/api/documents/{document['id']}/download")
+
+    assert unauthenticated.status_code == 401
+    assert foreign.status_code == 404
+
+
+def test_pdf_download_rejects_non_pdf_documents(client_factory):
+    with client_factory() as client:
+        _register(client)
+        document = _upload(client, "notes.txt", b"text only").json()
+
+        response = client.get(f"/api/documents/{document['id']}/download")
+
+    assert response.status_code == 415
+
+
+def test_document_upload_and_pdf_content_use_injected_private_storage(client_factory, tmp_path):
+    provider = _MemoryStorageProvider()
+    pdf = (Path(__file__).parent / "fixtures" / "tiny-text.pdf").read_bytes()
+    with client_factory(
+        storage_provider=provider,
+        document_storage_dir=tmp_path / "documents",
+        document_staging_dir=tmp_path / "document-staging",
+    ) as owner, client_factory(
+        storage_provider=provider,
+        document_storage_dir=tmp_path / "documents",
+        document_staging_dir=tmp_path / "document-staging",
+    ) as another_user:
+        owner_data = _register(owner, "private-storage-owner@example.com")
+        uploaded = _upload(owner, "original.pdf", pdf)
+        assert uploaded.status_code == 201, uploaded.text
+        document_id = uploaded.json()["id"]
+        storage_key = provider.put_calls[0][1]
+        inline_content = owner.get(f"/api/documents/{document_id}/content")
+
+        _register(another_user, "private-storage-other@example.com")
+        read_calls_before_foreign_access = list(provider.read_calls)
+        foreign_content = another_user.get(f"/api/documents/{document_id}/content")
+
+    assert provider.put_calls == [("documents", storage_key, "application/pdf")]
+    assert storage_key.startswith(f"{owner_data['id']}/")
+    assert len(storage_key) <= 64
+    assert inline_content.status_code == 200
+    assert inline_content.content == pdf
+    assert inline_content.headers["content-disposition"] == "inline"
+    assert foreign_content.status_code == 404
+    assert provider.read_calls == read_calls_before_foreign_access
+    assert not list((tmp_path / "documents").iterdir())
+
+
+def test_document_delete_only_removes_selected_provider_object(client_factory, tmp_path):
+    provider = _MemoryStorageProvider()
+    with client_factory(
+        storage_provider=provider,
+        document_storage_dir=tmp_path / "documents",
+        document_staging_dir=tmp_path / "document-staging",
+    ) as client:
+        _register(client)
+        first = _upload(client, "first.txt", b"first object").json()
+        second = _upload(client, "second.txt", b"second object").json()
+        first_key, second_key = provider.put_calls[0][1], provider.put_calls[1][1]
+
+        deleted = client.delete(
+            f"/api/documents/{first['id']}",
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert deleted.status_code == 204
+    assert provider.delete_calls == [("documents", first_key)]
+    assert ("documents", first_key) not in provider.objects
+    assert provider.objects[("documents", second_key)][0] == b"second object"
+
+
+def test_document_upload_database_failure_compensates_provider_object(client_factory, monkeypatch):
+    provider = _MemoryStorageProvider()
+    with client_factory(storage_provider=provider) as client:
+        _register(client)
+
+        def fail_commit(_session):
+            raise SQLAlchemyError("database unavailable")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+        response = _upload(client, "temporary.txt", b"validated text")
+        monkeypatch.undo()
+        listing = client.get("/api/documents")
+
+    assert response.status_code == 500
+    assert provider.put_calls == [("documents", provider.put_calls[0][1], "text/plain")]
+    assert provider.delete_calls == [("documents", provider.put_calls[0][1])]
+    assert provider.objects == {}
+    assert listing.status_code == 200
+    assert listing.json() == []
 
 
 def test_uploaded_document_and_extracted_text_survive_api_restart(client_factory, tmp_path):

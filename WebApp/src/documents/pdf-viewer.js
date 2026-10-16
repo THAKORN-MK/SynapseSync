@@ -21,6 +21,19 @@ function element(tagName, className, text) {
   return node;
 }
 
+function icon(paths) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  for (const d of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
 function clampPage(value, pageCount) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 1;
@@ -117,6 +130,9 @@ export async function mountPdfPreview({ container, blob, pdfjs: injectedPdfJs, m
 
 export async function mountPdfViewer({
   container,
+  toolbarContainer,
+  fullscreenTarget,
+  compactToolbar = false,
   blob,
   pdfjs: injectedPdfJs,
   initialPage = 1,
@@ -128,26 +144,38 @@ export async function mountPdfViewer({
 
   const pdfjs = injectedPdfJs ?? await loadPdfJs();
   const toolbar = element('div', 'pdf-viewer__toolbar');
-  const previousButton = element('button', 'button button-secondary', 'หน้าก่อน');
+  toolbar.dataset.role = 'pdf-toolbar';
+  const iconButtonClass = compactToolbar ? 'button button-quiet pdf-viewer__icon-control' : 'button button-secondary';
+  const previousButton = element('button', iconButtonClass, compactToolbar ? undefined : 'หน้าก่อน');
   previousButton.type = 'button';
   previousButton.dataset.action = 'previous-page';
+  previousButton.setAttribute('aria-label', 'หน้าก่อน');
+  previousButton.title = 'หน้าก่อน';
+  if (compactToolbar) previousButton.append(icon(['m15 18-6-6 6-6']));
   const pageStatus = element('span', 'pdf-viewer__page-status');
   pageStatus.dataset.role = 'pdf-page-status';
   pageStatus.setAttribute('aria-live', 'polite');
-  const nextButton = element('button', 'button button-secondary', 'หน้าถัดไป');
+  const nextButton = element('button', iconButtonClass, compactToolbar ? undefined : 'หน้าถัดไป');
   nextButton.type = 'button';
   nextButton.dataset.action = 'next-page';
-  const zoomOutButton = element('button', 'button button-quiet', '−');
+  nextButton.setAttribute('aria-label', 'หน้าถัดไป');
+  nextButton.title = 'หน้าถัดไป';
+  if (compactToolbar) nextButton.append(icon(['m9 18 6-6-6-6']));
+  const zoomOutButton = element('button', iconButtonClass, compactToolbar ? undefined : '−');
   zoomOutButton.type = 'button';
   zoomOutButton.dataset.action = 'zoom-out';
   zoomOutButton.setAttribute('aria-label', 'ย่อเอกสาร');
+  zoomOutButton.title = 'ย่อเอกสาร';
+  if (compactToolbar) zoomOutButton.append(icon(['M5 12h14']));
   const zoomStatus = element('span', 'pdf-viewer__zoom-status', '100%');
   zoomStatus.dataset.role = 'pdf-zoom-status';
-  const zoomInButton = element('button', 'button button-quiet', '+');
+  const zoomInButton = element('button', iconButtonClass, compactToolbar ? undefined : '+');
   zoomInButton.type = 'button';
   zoomInButton.dataset.action = 'zoom-in';
   zoomInButton.setAttribute('aria-label', 'ขยายเอกสาร');
-  const fullscreenButton = element('button', 'button button-secondary', 'เต็มหน้าจอ');
+  zoomInButton.title = 'ขยายเอกสาร';
+  if (compactToolbar) zoomInButton.append(icon(['M12 5v14', 'M5 12h14']));
+  const fullscreenButton = element('button', compactToolbar ? 'button button-primary pdf-viewer__fullscreen-control' : 'button button-secondary', compactToolbar ? 'เต็มจอ' : 'เต็มหน้าจอ');
   fullscreenButton.type = 'button';
   fullscreenButton.dataset.action = 'fullscreen';
   fullscreenButton.setAttribute('aria-label', 'เต็มหน้าจอ');
@@ -168,13 +196,25 @@ export async function mountPdfViewer({
   renderError.hidden = true;
   pageFrame.append(pageStack);
   const viewer = element('div', 'pdf-viewer');
-  viewer.append(toolbar, scaleNotice, renderError, pageFrame);
+  const fullscreenRoot = fullscreenTarget ?? viewer;
+  const fallbackFullscreenClass = fullscreenTarget ? 'document-reader-shell--fullscreen' : 'pdf-viewer--fullscreen';
+  viewer.append(scaleNotice, renderError, pageFrame);
+  if (toolbarContainer) toolbarContainer.append(toolbar);
+  else viewer.prepend(toolbar);
   container.replaceChildren(viewer);
 
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) });
-  const pdfDocument = await loadingTask.promise;
-  if (!Number.isSafeInteger(pdfDocument.numPages) || pdfDocument.numPages < 1) {
-    throw new Error('ไฟล์ PDF ไม่มีหน้าที่อ่านได้');
+  let pdfDocument;
+  try {
+    pdfDocument = await loadingTask.promise;
+    if (!Number.isSafeInteger(pdfDocument.numPages) || pdfDocument.numPages < 1) {
+      throw new Error('ไฟล์ PDF ไม่มีหน้าที่อ่านได้');
+    }
+  } catch (error) {
+    toolbar.remove();
+    viewer.remove();
+    await Promise.resolve(loadingTask.destroy?.()).catch(() => {});
+    throw error;
   }
 
   let currentPage = clampPage(initialPage, pdfDocument.numPages);
@@ -188,6 +228,7 @@ export async function mountPdfViewer({
   } catch (error) {
     await pdfDocument.destroy?.();
     await loadingTask.destroy?.();
+    toolbar.remove();
     viewer.remove();
     throw error;
   }
@@ -214,6 +255,8 @@ export async function mountPdfViewer({
       section,
       pdfPage: pageNumber === currentPage ? initialPdfPage : null,
       canvas: null,
+      textLayer: null,
+      textLayerElement: null,
       renderTask: null,
       renderPromise: null,
       renderedScale: null,
@@ -228,7 +271,7 @@ export async function mountPdfViewer({
   }
 
   function isFullscreen() {
-    return document.fullscreenElement === viewer || fallbackFullscreen;
+    return document.fullscreenElement === fullscreenRoot || fallbackFullscreen;
   }
 
   function updateFullscreenButton() {
@@ -271,10 +314,18 @@ export async function mountPdfViewer({
     const keep = new Set(visible);
     for (const state of pageStates) {
       if (keep.has(state) || state.pageNumber === currentPage || state.renderPromise || !state.canvas) continue;
+      clearTextLayer(state);
       state.canvas.remove();
       state.canvas = null;
       state.renderedScale = null;
     }
+  }
+
+  function clearTextLayer(state) {
+    state.textLayer?.cancel?.();
+    state.textLayer = null;
+    state.textLayerElement?.remove();
+    state.textLayerElement = null;
   }
 
   async function renderPage(state) {
@@ -292,6 +343,7 @@ export async function mountPdfViewer({
       const { viewport, actualScale, limited } = boundedViewport(pdfPage, requestedScale);
       const canvas = state.canvas ?? element('canvas', 'pdf-viewer__canvas');
       state.canvas = canvas;
+      clearTextLayer(state);
       canvas.setAttribute('aria-label', `หน้า ${state.pageNumber} ของเอกสาร PDF`);
       canvas.dataset.role = 'pdf-page-canvas';
       state.section.replaceChildren(canvas);
@@ -326,6 +378,29 @@ export async function mountPdfViewer({
         if (state.renderTask === task) state.renderTask = null;
       }
       if (!destroyed && generation === state.generation) {
+        if (typeof pdfjs.TextLayer === 'function' && typeof pdfPage.streamTextContent === 'function') {
+          const textLayerElement = element('div', 'pdf-viewer__text-layer textLayer');
+          textLayerElement.dataset.role = 'pdf-page-text-layer';
+          textLayerElement.setAttribute('aria-label', `ข้อความที่เลือกได้จากหน้า ${state.pageNumber}`);
+          textLayerElement.style.setProperty('--scale-factor', String(actualScale));
+          const textLayer = new pdfjs.TextLayer({
+            textContentSource: pdfPage.streamTextContent({
+              includeMarkedContent: true,
+              disableNormalization: true,
+            }),
+            container: textLayerElement,
+            viewport,
+          });
+          state.textLayer = textLayer;
+          state.textLayerElement = textLayerElement;
+          state.section.append(textLayerElement);
+          try {
+            await textLayer.render();
+          } catch {
+            clearTextLayer(state);
+          }
+          if (destroyed || generation !== state.generation) clearTextLayer(state);
+        }
         state.renderedScale = requestedScale;
         renderError.hidden = true;
       }
@@ -421,17 +496,17 @@ export async function mountPdfViewer({
   function enterFallbackFullscreen() {
     if (!fallbackPlaceholder) {
       fallbackPlaceholder = document.createComment('pdf-viewer-placeholder');
-      viewer.before(fallbackPlaceholder);
-      document.body.append(viewer);
+      fullscreenRoot.before(fallbackPlaceholder);
+      document.body.append(fullscreenRoot);
     }
     fallbackFullscreen = true;
-    viewer.classList.add('pdf-viewer--fullscreen');
+    fullscreenRoot.classList.add(fallbackFullscreenClass);
   }
 
   function exitFallbackFullscreen() {
     fallbackFullscreen = false;
-    viewer.classList.remove('pdf-viewer--fullscreen');
-    if (fallbackPlaceholder?.parentNode) fallbackPlaceholder.replaceWith(viewer);
+    fullscreenRoot.classList.remove(fallbackFullscreenClass);
+    if (fallbackPlaceholder?.parentNode) fallbackPlaceholder.replaceWith(fullscreenRoot);
     fallbackPlaceholder = null;
   }
 
@@ -444,7 +519,7 @@ export async function mountPdfViewer({
   }
 
   async function toggleFullscreen() {
-    if (document.fullscreenElement === viewer) {
+    if (document.fullscreenElement === fullscreenRoot) {
       try {
         await document.exitFullscreen?.();
       } catch {
@@ -452,9 +527,9 @@ export async function mountPdfViewer({
       }
     } else if (fallbackFullscreen) {
       exitFallbackFullscreen();
-    } else if (typeof viewer.requestFullscreen === 'function') {
+    } else if (typeof fullscreenRoot.requestFullscreen === 'function') {
       try {
-        await viewer.requestFullscreen();
+        await fullscreenRoot.requestFullscreen();
       } catch {
         enterFallbackFullscreen();
       }
@@ -497,6 +572,7 @@ export async function mountPdfViewer({
     fallbackPlaceholder?.remove();
     fallbackPlaceholder = null;
     for (const state of pageStates) state.renderTask?.cancel?.();
+    for (const state of pageStates) clearTextLayer(state);
     await Promise.all(pageStates.map((state) => state.renderTask?.promise?.catch(() => {})));
     await renderQueue.catch(() => {});
     await pdfDocument.destroy?.();
@@ -512,7 +588,7 @@ export async function mountPdfViewer({
       destroyed = true;
       removeListeners();
       window.removeEventListener('resize', handleViewportResize);
-      if (document.fullscreenElement === viewer) {
+      if (document.fullscreenElement === fullscreenRoot) {
         try {
           await document.exitFullscreen?.();
         } catch {
@@ -523,11 +599,13 @@ export async function mountPdfViewer({
       fallbackPlaceholder?.remove();
       fallbackPlaceholder = null;
       for (const state of pageStates) state.renderTask?.cancel?.();
+      for (const state of pageStates) clearTextLayer(state);
       await Promise.all(pageStates.map((state) => state.renderTask?.promise?.catch(() => {})));
       await currentRender.catch(() => {});
       await renderQueue.catch(() => {});
       await pdfDocument.destroy?.();
       await loadingTask.destroy?.();
+      toolbar.remove();
       viewer.remove();
     },
   };

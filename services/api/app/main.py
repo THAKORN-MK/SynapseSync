@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from dotenv import dotenv_values
 
 from app import __version__
 from app.ai.config import AISettings
@@ -35,6 +36,7 @@ from app.routers.quizzes import router as quizzes_router
 from app.routers.tags import router as tags_router
 from app.routers.tutor import router as tutor_router
 from app.tags.catalog import seed_builtin_subjects
+from app.storage.providers import FileStorageProvider, create_storage_provider
 
 
 def _repository_root() -> Path:
@@ -53,6 +55,7 @@ def create_app(
     ai_settings: AISettings | None = None,
     tutor_provider: TutorProvider | None = None,
     tutor_provider_factory: Callable[[str | None, str | None], TutorProvider] | None = None,
+    storage_provider: FileStorageProvider | None = None,
 ) -> FastAPI:
     if quiz_provider is not None and quiz_provider_factory is not None:
         raise ValueError("Provide either quiz_provider or quiz_provider_factory, not both")
@@ -69,6 +72,21 @@ def create_app(
         if tutor_attachment_storage_dir
         else data_dir / "tutor-attachments"
     )
+    if storage_provider is None:
+        api_dir = Path(__file__).resolve().parent.parent
+        file_values = dotenv_values(api_dir / ".env")
+
+        def setting(name: str) -> str | None:
+            return os.environ.get(name, file_values.get(name))
+
+        resolved_storage_provider = create_storage_provider(
+            image_storage_dir=resolved_image_storage_dir,
+            document_storage_dir=resolved_document_storage_dir,
+            supabase_url=setting("SUPABASE_URL"),
+            supabase_secret_key=setting("SUPABASE_SECRET_KEY"),
+        )
+    else:
+        resolved_storage_provider = storage_provider
     session_factory = create_session_factory(resolved_database_url)
     engine = session_factory.kw["bind"]
 
@@ -89,6 +107,9 @@ def create_app(
         migrate_deadline_tag_id(engine)
         migrate_deadline_status(engine)
         yield
+        close_storage = getattr(resolved_storage_provider, "close", None)
+        if close_storage is not None:
+            close_storage()
         engine.dispose()
 
     application = FastAPI(
@@ -103,6 +124,7 @@ def create_app(
     application.state.document_storage_dir = resolved_document_storage_dir
     application.state.document_staging_dir = resolved_document_staging_dir
     application.state.tutor_attachment_storage_dir = resolved_tutor_attachment_storage_dir
+    application.state.storage_provider = resolved_storage_provider
     application.state.cookie_secure = cookie_secure
     resolved_ai_settings = ai_settings or AISettings.from_environment(Path(__file__).resolve().parent.parent)
     application.state.ai_settings = resolved_ai_settings

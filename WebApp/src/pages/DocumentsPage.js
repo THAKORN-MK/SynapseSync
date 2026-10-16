@@ -2,24 +2,22 @@ import {
   createTag as createTagRequest,
   deleteDocument as deleteDocumentRequest,
   getDocumentContent as getDocumentContentRequest,
-  getDocumentText as getDocumentTextRequest,
   listDocuments as listDocumentsRequest,
   listTags as listTagsRequest,
   renameDocument as renameDocumentRequest,
   replaceDocumentTags as replaceDocumentTagsRequest,
   uploadDocument as uploadDocumentRequest,
 } from '../api/client.js';
-import { mountPdfPreview } from '../documents/pdf-viewer.js';
 import { renderTagChips, renderTagPicker } from '../tags/tag-components.js';
 import { createTagAssignmentQueue } from '../tags/tag-assignment-queue.js';
 import { nextDocumentTagSelection } from '../tags/document-tag-selection.js';
+import { mountPdfPreview } from '../documents/pdf-viewer.js';
 
 function getDocumentPageSize(width) {
   if (width <= 480) return 6;
   if (width <= 1079) return 12;
   return 24;
 }
-const FILE_TYPES = { pdf: 'PDF', docx: 'DOCX', md: 'Markdown', txt: 'Text' };
 const FILE_BADGES = { pdf: 'PDF', docx: 'DOCX', md: 'MD', txt: 'TXT' };
 
 function element(tagName, className, text) {
@@ -27,21 +25,6 @@ function element(tagName, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
-}
-
-function formatDate(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? 'ไม่ระบุวันที่'
-    : new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium' }).format(date);
-}
-
-function formatFileSize(sizeBytes) {
-  if (!Number.isFinite(Number(sizeBytes)) || Number(sizeBytes) < 0) return '—';
-  const size = Number(sizeBytes);
-  return size < 1024 * 1024
-    ? `${Math.max(1, Math.round(size / 1024))} KB`
-    : `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function routeLink(label, path, navigate, className = 'button button-secondary') {
@@ -56,51 +39,83 @@ function routeLink(label, path, navigate, className = 'button button-secondary')
   return link;
 }
 
+function normalizeDocumentTitle(value) {
+  return String(value ?? '').trim().replace(/\.(pdf|docx?|md|txt)$/i, '').trim();
+}
+
+function displayDocumentTitle(documentItem) {
+  return normalizeDocumentTitle(documentItem.title || documentItem.original_filename) || 'เอกสารไม่มีชื่อ';
+}
+
+function showDialog(dialog) {
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+function closeDialog(dialog) {
+  if (typeof dialog.close === 'function' && dialog.open) dialog.close();
+  else dialog.removeAttribute('open');
+}
+
+function observePdfPreview(preview, documentItem, loadDocumentContent, pdfjs) {
+  let cancelled = false;
+  let observer;
+
+  const renderPreview = async () => {
+    try {
+      const blob = await loadDocumentContent(documentItem.id);
+      if (cancelled || !preview.isConnected) return;
+      await mountPdfPreview({ container: preview, blob, pdfjs });
+    } catch {
+      if (cancelled || !preview.isConnected) return;
+      preview.replaceChildren(element('span', 'document-library-card__preview-error', 'แสดงตัวอย่าง PDF ไม่ได้'));
+    }
+  };
+
+  if (typeof IntersectionObserver !== 'function') {
+    void renderPreview();
+  } else {
+    observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      void renderPreview();
+    }, { rootMargin: '180px 0px' });
+    observer.observe(preview);
+  }
+
+  return () => {
+    cancelled = true;
+    observer?.disconnect();
+  };
+}
+
 function flattenTags(catalog) {
   return Array.isArray(catalog?.tags) ? catalog.tags : [];
 }
 
-function renderFilterChips(catalog, selectedTagId, onSelect) {
-  const group = element('div', 'document-tag-filters');
-  group.setAttribute('role', 'group');
-  group.setAttribute('aria-label', 'กรองเอกสารตามวิชาหรือแท็ก');
+function renderTagFilter(catalog, selectedTagId, onSelect) {
+  const select = element('select', 'document-library-filter themed-select');
+  select.dataset.role = 'document-tag-filter';
+  select.setAttribute('aria-label', 'กรองเอกสารตามวิชาหรือแท็ก');
+  setTagFilterOptions(select, catalog, selectedTagId);
+  select.addEventListener('change', () => {
+    const value = select.value;
+    onSelect(value ? Number(value) : null);
+  });
+  return select;
+}
 
-  const options = [{ id: null, name: 'ทั้งหมด', color: 'violet' }, ...flattenTags(catalog)];
-  for (const tag of options) {
-    const button = element('button', 'tag-chip document-tag-filter', tag.name);
-    button.type = 'button';
-    button.dataset.color = tag.color || 'violet';
-    button.dataset.filterTagId = tag.id === null ? '' : String(tag.id);
-    button.setAttribute('aria-pressed', String(tag.id === selectedTagId || (tag.id === null && selectedTagId === null)));
-    button.addEventListener('click', () => onSelect(tag.id));
-    group.append(button);
+function setTagFilterOptions(select, catalog, selectedTagId) {
+  const options = [element('option', '', 'หมวดทั้งหมด')];
+  options[0].value = '';
+  for (const tag of flattenTags(catalog)) {
+    const label = tag.parent_id ? `↳ ${tag.name}` : tag.name;
+    const option = element('option', '', label);
+    option.value = String(tag.id);
+    options.push(option);
   }
-  return group;
-}
-
-function renderTextDocumentPreview(preview, documentItem, text) {
-  const paper = element('div', 'document-library-card__preview-paper');
-  const title = element('p', 'document-library-card__preview-title', documentItem.title || 'เอกสารไม่มีชื่อ');
-  const excerpt = String(text ?? '').trim().slice(0, 520) || 'ไม่พบข้อความตัวอย่างในเอกสารนี้';
-  const body = element('pre', 'document-library-card__preview-text', excerpt);
-  body.dataset.role = 'document-text-preview';
-  paper.append(title, body);
-  const fileType = element('span', 'document-library-card__preview-type', FILE_BADGES[documentItem.file_type] || 'FILE');
-  fileType.dataset.role = 'document-preview-type';
-  preview.replaceChildren(paper, fileType);
-  preview.dataset.previewState = 'ready';
-}
-
-function renderUnavailablePreview(preview, documentItem) {
-  const paper = element('div', 'document-library-card__preview-paper');
-  paper.append(
-    element('p', 'document-library-card__preview-title', documentItem.title || 'เอกสารไม่มีชื่อ'),
-    element('p', 'document-library-card__preview-unavailable', 'ไม่สามารถสร้างตัวอย่างเอกสารได้'),
-  );
-  const fileType = element('span', 'document-library-card__preview-type', FILE_BADGES[documentItem.file_type] || 'FILE');
-  fileType.dataset.role = 'document-preview-type';
-  preview.replaceChildren(paper, fileType);
-  preview.dataset.previewState = 'unavailable';
+  select.replaceChildren(...options);
+  select.value = selectedTagId === null ? '' : String(selectedTagId);
 }
 
 function makeDocumentCard(documentItem, {
@@ -114,34 +129,80 @@ function makeDocumentCard(documentItem, {
   confirmDelete,
   navigate,
   setMessage,
+  loadDocumentContent,
+  pdfjs,
 }) {
   const card = element('article', 'document-library-card');
   card.dataset.documentId = String(documentItem.id);
+  const initialTitle = displayDocumentTitle(documentItem);
+  const fileTypeLabel = FILE_BADGES[documentItem.file_type] || 'FILE';
+  const openLink = routeLink('', `/documents/${documentItem.id}`, navigate, 'document-library-card__open-link');
+  openLink.setAttribute('aria-label', `เปิดอ่าน ${initialTitle} (${fileTypeLabel})`);
+  openLink.title = 'เปิดอ่านเอกสาร';
 
-  const preview = element('div', 'document-library-card__preview');
-  preview.setAttribute('aria-hidden', 'true');
-  preview.dataset.role = 'document-preview';
-  preview.dataset.previewState = 'loading';
+  const hasRenderedPreview = documentItem.file_type === 'pdf';
+  const preview = element(
+    'div',
+    `document-library-card__preview${hasRenderedPreview ? '' : ' document-library-card__preview--placeholder'}`,
+  );
+  if (hasRenderedPreview) {
+    preview.dataset.role = 'document-preview';
+    preview.setAttribute('aria-label', `ตัวอย่างหน้าแรกของ ${initialTitle}`);
+  } else {
+    preview.setAttribute('role', 'img');
+    preview.setAttribute('aria-label', `ไม่มีภาพตัวอย่างสำหรับไฟล์ ${fileTypeLabel}`);
+    const placeholderIcon = element('span', 'document-library-card__preview-placeholder-icon');
+    placeholderIcon.setAttribute('aria-hidden', 'true');
+    preview.append(placeholderIcon);
+  }
+
   const fileIcon = element('span', 'document-library-card__file-icon');
-  const fileType = element('span', 'document-library-card__file-type', FILE_BADGES[documentItem.file_type] || 'FILE');
+  const fileType = element('span', 'document-library-card__file-type', fileTypeLabel);
+  if (documentItem.file_type === 'pdf') fileType.classList.add('document-library-card__file-type--pdf');
+  fileType.dataset.role = 'document-file-type';
   fileIcon.append(fileType);
-  const previewType = element('span', 'document-library-card__preview-type', FILE_BADGES[documentItem.file_type] || 'FILE');
-  previewType.dataset.role = 'document-preview-type';
-  preview.append(fileIcon, previewType);
+  fileIcon.setAttribute('aria-hidden', 'true');
 
   const headingRow = element('div', 'document-library-card__heading');
-  const heading = element('h2', '', documentItem.title || 'เอกสารไม่มีชื่อ');
+  const heading = element('h2', '', initialTitle);
+  headingRow.append(fileIcon, heading);
+
+  const editTitleButton = element('button', 'icon-button document-library-card__action document-library-card__edit-title', '✎');
+  editTitleButton.type = 'button';
+  editTitleButton.dataset.action = 'edit-title';
+  editTitleButton.setAttribute('aria-label', `แก้ชื่อ ${initialTitle}`);
+  editTitleButton.title = 'แก้ชื่อ';
+
+  const deleteButton = element('button', 'icon-button document-library-card__action document-library-card__delete');
+  deleteButton.type = 'button';
+  deleteButton.dataset.action = 'delete-document';
+  deleteButton.setAttribute('aria-label', `ลบ ${initialTitle}`);
+  deleteButton.title = 'ลบเอกสาร';
+  const trashIcon = element('span', 'document-library-card__trash-icon');
+  trashIcon.setAttribute('aria-hidden', 'true');
+  deleteButton.append(trashIcon);
+
+  const titleDialog = element('dialog', 'document-title-dialog');
+  titleDialog.dataset.role = 'title-dialog';
+  titleDialog.setAttribute('aria-labelledby', `document-title-dialog-heading-${documentItem.id}`);
   const titleForm = element('form', 'document-title-edit');
   titleForm.dataset.role = 'title-form';
-  titleForm.hidden = true;
+  const titleDialogHeader = element('div', 'document-title-edit__header');
+  const titleDialogHeading = element('h3', '', 'เปลี่ยนชื่อเอกสาร');
+  titleDialogHeading.id = `document-title-dialog-heading-${documentItem.id}`;
+  const closeTitleDialog = element('button', 'icon-button', '×');
+  closeTitleDialog.type = 'button';
+  closeTitleDialog.dataset.action = 'cancel-title';
+  closeTitleDialog.setAttribute('aria-label', 'ปิดหน้าต่างแก้ชื่อ');
+  titleDialogHeader.append(titleDialogHeading, closeTitleDialog);
   const titleLabel = element('label', '', 'ชื่อเอกสาร');
   const titleInput = element('input', 'document-title-edit__input');
   titleInput.type = 'text';
   titleInput.maxLength = 160;
   titleInput.required = true;
-  titleInput.value = documentItem.title || '';
+  titleInput.value = initialTitle;
   titleInput.dataset.role = 'title-input';
-  titleLabel.htmlFor = `document-title-${documentItem.id}`;
+  titleLabel.htmlFor = `document-title-input-${documentItem.id}`;
   titleInput.id = titleLabel.htmlFor;
   const titleActions = element('div', 'document-title-edit__actions');
   const saveTitle = element('button', 'button button-primary', 'บันทึกชื่อ');
@@ -150,29 +211,26 @@ function makeDocumentCard(documentItem, {
   cancelTitle.type = 'button';
   cancelTitle.dataset.action = 'cancel-title';
   titleActions.append(saveTitle, cancelTitle);
-  titleForm.append(titleLabel, titleInput, titleActions);
+  titleForm.append(titleDialogHeader, titleLabel, titleInput, titleActions);
+  titleDialog.append(titleForm);
 
-  const editTitleButton = element('button', 'button button-quiet', 'แก้ชื่อ');
-  editTitleButton.type = 'button';
-  editTitleButton.dataset.action = 'edit-title';
-  editTitleButton.setAttribute('aria-label', `แก้ชื่อ ${documentItem.title || 'เอกสาร'}`);
   editTitleButton.addEventListener('click', () => {
-    titleInput.value = documentItem.title || '';
-    titleForm.hidden = false;
-    heading.hidden = true;
-    editTitleButton.hidden = true;
+    titleInput.value = displayDocumentTitle(documentItem);
+    showDialog(titleDialog);
     titleInput.focus();
+    titleInput.select();
   });
   cancelTitle.addEventListener('click', () => {
-    titleInput.value = documentItem.title || '';
-    titleForm.hidden = true;
-    heading.hidden = false;
-    editTitleButton.hidden = false;
+    titleInput.value = displayDocumentTitle(documentItem);
+    closeDialog(titleDialog);
     setMessage('');
+  });
+  titleDialog.addEventListener('click', (event) => {
+    if (event.target === titleDialog) closeDialog(titleDialog);
   });
   titleForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const title = titleInput.value.trim();
+    const title = normalizeDocumentTitle(titleInput.value);
     if (!title) {
       setMessage('กรุณากรอกชื่อเอกสาร', true);
       titleInput.focus();
@@ -182,11 +240,14 @@ function makeDocumentCard(documentItem, {
     try {
       const updated = await updateTitle(documentItem.id, { title });
       documentItem.title = updated?.title || title;
-      heading.textContent = documentItem.title;
-      editTitleButton.setAttribute('aria-label', `แก้ชื่อ ${documentItem.title}`);
-      titleForm.hidden = true;
-      heading.hidden = false;
-      editTitleButton.hidden = false;
+      const nextTitle = displayDocumentTitle(documentItem);
+      heading.textContent = nextTitle;
+      openLink.setAttribute('aria-label', `เปิดอ่าน ${nextTitle} (${fileTypeLabel})`);
+      editTitleButton.setAttribute('aria-label', `แก้ชื่อ ${nextTitle}`);
+      deleteButton.setAttribute('aria-label', `ลบ ${nextTitle}`);
+      tagSection.setAttribute('aria-label', `แท็กของ ${nextTitle}`);
+      manageTags.setAttribute('aria-label', `แก้แท็กของ ${nextTitle}`);
+      closeDialog(titleDialog);
       setMessage('ชื่อเอกสารอัปเดตแล้ว');
     } catch (error) {
       setMessage(error?.message || 'เปลี่ยนชื่อเอกสารไม่สำเร็จ กรุณาลองอีกครั้ง', true);
@@ -195,31 +256,16 @@ function makeDocumentCard(documentItem, {
     }
   });
 
-  const source = element('p', 'document-library-card__source');
-  source.append(
-    element('span', '', documentItem.original_filename || 'ไม่ระบุชื่อไฟล์'),
-    element('span', 'document-library-card__separator', '·'),
-    element('span', '', FILE_TYPES[documentItem.file_type] || 'เอกสาร'),
-    element('span', 'document-library-card__separator', '·'),
-    element('span', '', formatFileSize(documentItem.size_bytes)),
-  );
-
-  const metadata = element('div', 'document-library-card__metadata');
-  metadata.append(element('span', '', `เพิ่มเมื่อ ${formatDate(documentItem.created_at)}`));
-  if (documentItem.last_page) metadata.append(element('span', '', `อ่านถึงหน้า ${documentItem.last_page}`));
-  else if (Number.isFinite(documentItem.scroll_ratio)) {
-    metadata.append(element('span', '', `อ่านแล้ว ${Math.round(documentItem.scroll_ratio * 100)}%`));
-  } else metadata.append(element('span', '', 'ยังไม่ได้เริ่มอ่าน'));
-
   const tagSection = element('section', 'document-library-card__tag-section');
-  tagSection.setAttribute('aria-label', `แท็กของ ${documentItem.title || 'เอกสาร'}`);
-  const tagHeading = element('h3', 'document-library-card__tag-heading', 'วิชาและหัวข้อ');
+  tagSection.setAttribute('aria-label', `แท็กของ ${initialTitle}`);
   const tagSummary = element('div', 'document-library-card__tag-summary');
   tagSummary.dataset.role = 'tag-summary';
-  const manageTags = element('button', 'button button-quiet', 'จัดการแท็ก');
+  const manageTags = element('button', 'icon-button document-library-card__tag-edit', '+');
   manageTags.type = 'button';
   manageTags.dataset.action = 'manage-tags';
   manageTags.setAttribute('aria-expanded', 'false');
+  manageTags.setAttribute('aria-label', `แก้แท็กของ ${initialTitle}`);
+  manageTags.title = 'แก้แท็ก';
   const pickerContainer = element('div', 'document-library-card__picker-container');
   pickerContainer.hidden = true;
 
@@ -274,24 +320,15 @@ function makeDocumentCard(documentItem, {
   });
 
   const tagInfo = element('div', 'document-library-card__tag-info');
-  tagInfo.append(tagHeading, tagSummary);
+  tagInfo.append(tagSummary);
   tagSection.append(tagInfo, manageTags, pickerContainer);
 
   const truncationNotice = element('p', 'document-library-card__search-notice');
   truncationNotice.textContent = 'ค้นหาได้บางส่วน เนื่องจากเอกสารมีเนื้อหายาว';
   truncationNotice.hidden = !documentItem.search_text_truncated;
 
-  const actions = element('div', 'document-library-card__actions');
-  actions.append(
-    routeLink('เปิดอ่าน', `/documents/${documentItem.id}`, navigate, 'button button-primary'),
-    editTitleButton,
-  );
-  const deleteButton = element('button', 'button button-quiet document-library-card__delete', 'ลบ');
-  deleteButton.type = 'button';
-  deleteButton.dataset.action = 'delete-document';
-  deleteButton.setAttribute('aria-label', `ลบ ${documentItem.title || 'เอกสาร'}`);
   deleteButton.addEventListener('click', async () => {
-    if (!confirmDelete(documentItem)) return;
+    if (!confirmDelete({ ...documentItem, title: displayDocumentTitle(documentItem) })) return;
     deleteButton.disabled = true;
     try {
       await removeDocument(documentItem.id);
@@ -303,35 +340,36 @@ function makeDocumentCard(documentItem, {
       setMessage(error?.message || 'ลบเอกสารไม่สำเร็จ กรุณาลองอีกครั้ง', true);
     }
   });
-  actions.append(deleteButton);
-  headingRow.append(heading, editTitleButton);
-  card.append(preview, headingRow, titleForm, source, metadata, tagSection, truncationNotice, actions);
+  card.append(openLink, editTitleButton, deleteButton);
+  card.append(preview);
+  card.append(headingRow, tagSection, truncationNotice, titleDialog);
   return card;
 }
 
 export function renderDocumentsPage({
   loadDocuments = listDocumentsRequest,
   loadTags = listTagsRequest,
-  loadDocumentContent = getDocumentContentRequest,
-  loadDocumentText = getDocumentTextRequest,
-  pdfjs,
   uploadDocument = uploadDocumentRequest,
   createTag = createTagRequest,
   renameDocument = renameDocumentRequest,
   replaceDocumentTags = replaceDocumentTagsRequest,
+  loadDocumentContent = getDocumentContentRequest,
+  pdfjs,
   deleteDocument = deleteDocumentRequest,
   confirmDelete = (item) => window.confirm(`ต้องการลบ “${item.title}” หรือไม่?`),
   navigate,
 } = {}) {
   const page = element('section', 'page document-library-page');
   page.setAttribute('aria-labelledby', 'document-library-title');
+  let tagCatalog = { tags: [] };
+  let selectedTagId = null;
   const header = element('header', 'document-page-heading');
   const title = element('h1', '', 'คลังเอกสาร');
   title.id = 'document-library-title';
   header.append(
     element('p', 'eyebrow', 'YOUR READING LIBRARY'),
     title,
-    element('p', 'page-intro', 'รวมเอกสารสำหรับอ่าน ค้นหา และจัดหมวดหมู่ไว้ในที่เดียว'),
+    element('p', 'page-intro', 'จัดเก็บเอกสารสำหรับอ่านและทบทวน ค้นหาได้จากชื่อไฟล์หรือเนื้อหา'),
   );
 
   const message = element('p', 'document-page-message');
@@ -342,13 +380,15 @@ export function renderDocumentsPage({
   const fileInput = element('input', 'document-upload__input');
   fileInput.type = 'file';
   fileInput.multiple = true;
-  fileInput.accept = '.pdf,.docx,.md,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/markdown,text/plain';
+  fileInput.accept = '.pdf,.md,.txt,application/pdf,text/markdown,text/plain';
   fileInput.dataset.role = 'file-input';
   fileInput.setAttribute('aria-label', 'เลือกเอกสารสำหรับอ่าน');
   const uploadCopy = element('div', 'document-upload-panel__copy');
+  const uploadIcon = element('span', 'document-upload-panel__icon', '↑');
+  uploadIcon.setAttribute('aria-hidden', 'true');
   uploadCopy.append(
-    element('h2', '', 'เพิ่มเอกสารสำหรับอ่าน'),
-    element('p', '', 'เลือกหรือวางไฟล์ PDF, DOCX, Markdown และ TXT ได้หลายไฟล์ · ไฟล์ละไม่เกิน 20 MB'),
+    element('h2', '', 'วางไฟล์ที่นี่ หรือเลือกจากอุปกรณ์'),
+    element('p', '', 'รองรับ PDF, Markdown และ TXT · ไฟล์ละไม่เกิน 20 MB'),
   );
   const chooseFiles = element('button', 'button button-primary', 'เลือกไฟล์');
   chooseFiles.type = 'button';
@@ -356,7 +396,7 @@ export function renderDocumentsPage({
   chooseFiles.addEventListener('click', () => fileInput.click());
   const uploadResults = element('div', 'document-upload-results');
   uploadResults.dataset.role = 'upload-results';
-  uploadPanel.append(uploadCopy, chooseFiles, fileInput, uploadResults);
+  uploadPanel.append(uploadIcon, uploadCopy, chooseFiles, fileInput, uploadResults);
 
   const searchForm = element('form', 'document-library-search');
   searchForm.dataset.role = 'document-search-form';
@@ -365,12 +405,16 @@ export function renderDocumentsPage({
   searchInput.placeholder = 'ค้นหาชื่อเอกสาร ชื่อไฟล์ หรือเนื้อหา';
   searchInput.setAttribute('aria-label', 'ค้นหาเอกสาร');
   searchInput.dataset.role = 'document-search-input';
+  const tagFilter = renderTagFilter(tagCatalog, selectedTagId, (tagId) => {
+    selectedTagId = tagId;
+    activeTagId = tagId;
+    hasSubmittedFilters = true;
+    void loadDocumentsPage();
+  });
   const searchButton = element('button', 'button button-primary', 'ค้นหา');
   searchButton.type = 'submit';
-  searchForm.append(searchInput, searchButton);
+  searchForm.append(searchInput, tagFilter, searchButton);
 
-  const tagFilters = element('div', 'document-tag-filter-wrap');
-  tagFilters.setAttribute('aria-label', 'ตัวกรองแท็ก');
   const list = element('div', 'document-library-list');
   list.dataset.role = 'document-list';
   const pagination = element('nav', 'document-library-pagination');
@@ -390,10 +434,8 @@ export function renderDocumentsPage({
   clearButton.type = 'button';
   clearButton.dataset.action = 'clear-filters';
   clearButton.hidden = true;
-  page.append(header, uploadPanel, searchForm, tagFilters, message, list, clearButton, pagination);
+  page.append(header, uploadPanel, searchForm, message, list, clearButton, pagination);
 
-  let tagCatalog = { tags: [] };
-  let selectedTagId = null;
   let activeTagId = null;
   let activeQuery = '';
   let hasSubmittedFilters = false;
@@ -403,67 +445,12 @@ export function renderDocumentsPage({
   let isLoading = false;
   let reloadAfterResize = false;
   const assignments = new Map();
-  const previewLoaders = new Map();
-  let previewObserver = null;
-  let previewGeneration = 0;
+  const previewCleanups = new Set();
   let destroyed = false;
 
-  function ensurePreviewObserver() {
-    if (!previewObserver && typeof globalThis.IntersectionObserver === 'function') {
-      previewObserver = new globalThis.IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const load = previewLoaders.get(entry.target);
-          if (!load) continue;
-          previewLoaders.delete(entry.target);
-          previewObserver.unobserve(entry.target);
-          void load();
-        }
-      }, { rootMargin: '180px 0px' });
-    }
-    return previewObserver;
-  }
-
-  function scheduleDocumentPreview(documentItem, preview) {
-    const generation = previewGeneration;
-    const load = async () => {
-      if (destroyed || generation !== previewGeneration || !preview.isConnected) return;
-      try {
-        if (documentItem.file_type === 'pdf') {
-          const blob = await loadDocumentContent(documentItem.id);
-          if (destroyed || generation !== previewGeneration || !preview.isConnected) return;
-          await mountPdfPreview({ container: preview, blob, pdfjs });
-          if (destroyed || generation !== previewGeneration || !preview.isConnected) return;
-          const fileType = element('span', 'document-library-card__preview-type', FILE_BADGES.pdf);
-          fileType.dataset.role = 'document-preview-type';
-          preview.append(fileType);
-          preview.dataset.previewState = 'ready';
-        } else {
-          const extracted = await loadDocumentText(documentItem.id);
-          if (destroyed || generation !== previewGeneration || !preview.isConnected) return;
-          renderTextDocumentPreview(preview, documentItem, extracted?.text ?? '');
-        }
-      } catch {
-        if (!destroyed && generation === previewGeneration && preview.isConnected) {
-          renderUnavailablePreview(preview, documentItem);
-        }
-      }
-    };
-
-    const observer = ensurePreviewObserver();
-    if (observer) {
-      previewLoaders.set(preview, load);
-      observer.observe(preview);
-    } else {
-      void load();
-    }
-  }
-
-  function clearPreviewSchedule() {
-    previewGeneration += 1;
-    previewObserver?.disconnect();
-    previewObserver = null;
-    previewLoaders.clear();
+  function clearCardPreviews() {
+    for (const cleanup of previewCleanups) cleanup();
+    previewCleanups.clear();
   }
 
   function setMessage(text, isError = false) {
@@ -504,7 +491,7 @@ export function renderDocumentsPage({
     assignment.syncTagSelection = (tagIds) => {
       item.tags = selectedTags(tagIds);
       const chips = renderTagChips(item.tags);
-      chips.setAttribute('aria-label', `แท็กของ ${item.title || 'เอกสาร'}`);
+      chips.setAttribute('aria-label', `แท็กของ ${displayDocumentTitle(item)}`);
       if (item.tags.length === 0) {
         chips.append(element('span', 'document-library-card__untagged', 'ยังไม่ได้เลือกวิชา'));
       }
@@ -530,17 +517,8 @@ export function renderDocumentsPage({
   }
 
   function renderFilters() {
-    const replacement = renderFilterChips(tagCatalog, selectedTagId, (tagId) => {
-      selectedTagId = tagId;
-      activeTagId = tagId;
-      hasSubmittedFilters = true;
-      renderFilters();
-      void loadDocumentsPage();
-    });
-    replacement.querySelectorAll('button').forEach((button) => {
-      button.disabled = isLoading;
-    });
-    tagFilters.replaceChildren(replacement);
+    setTagFilterOptions(tagFilter, tagCatalog, selectedTagId);
+    tagFilter.disabled = isLoading;
   }
 
   function setTagCatalog(catalog) {
@@ -601,6 +579,8 @@ export function renderDocumentsPage({
       confirmDelete,
       navigate,
       setMessage,
+      loadDocumentContent,
+      pdfjs,
     });
   }
 
@@ -612,7 +592,7 @@ export function renderDocumentsPage({
     pageIndex = targetPage;
     hasNextPage = false;
     updatePagination();
-    clearPreviewSchedule();
+    clearCardPreviews();
     list.replaceChildren();
     clearButton.hidden = true;
     renderFilters();
@@ -644,7 +624,8 @@ export function renderDocumentsPage({
       const cards = visibleItems.map(createCard);
       list.replaceChildren(...cards);
       cards.forEach((card, index) => {
-        scheduleDocumentPreview(visibleItems[index], card.querySelector('[data-role="document-preview"]'));
+        const preview = card.querySelector('[data-role="document-preview"]');
+        if (preview) previewCleanups.add(observePdfPreview(preview, visibleItems[index], loadDocumentContent, pdfjs));
       });
     } catch (error) {
       setMessage(error?.message || 'โหลดคลังเอกสารไม่สำเร็จ กรุณาลองอีกครั้ง', true);
@@ -748,7 +729,7 @@ export function renderDocumentsPage({
   page.destroy = () => {
     destroyed = true;
     window.removeEventListener('resize', handleResize);
-    clearPreviewSchedule();
+    clearCardPreviews();
   };
   return page;
 }

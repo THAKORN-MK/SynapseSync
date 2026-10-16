@@ -72,6 +72,7 @@ describe('document library page', () => {
   });
   afterEach(() => {
     mountedPages.splice(0).forEach((page) => page.destroy?.());
+    document.head.querySelectorAll('[data-test-styles="document-library-preview-overlay"]').forEach((style) => style.remove());
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -89,11 +90,28 @@ describe('document library page', () => {
     expect(page.querySelector('[data-role="file-input"]')).not.toBeNull();
   });
 
+  it('presents the upload-first library header with one accessible category filter', async () => {
+    const page = renderPage();
+    document.body.append(page);
+    await flushPromises();
+
+    expect(page.querySelector('.document-upload-panel__copy h2').textContent).toContain('วางไฟล์');
+    const uploadInput = page.querySelector('[data-role="file-input"]');
+    expect(page.querySelector('.document-upload-panel__copy p').textContent).toContain('PDF, Markdown และ TXT');
+    expect(page.querySelector('.document-upload-panel__copy p').textContent).not.toContain('DOCX');
+    expect(uploadInput.accept).not.toContain('.docx');
+    expect(uploadInput.accept).not.toContain('wordprocessingml');
+    expect(page.querySelector('[data-role="document-search-form"] .document-library-filter')).not.toBeNull();
+    expect(page.querySelector('[data-role="document-search-form"] [data-role="document-tag-filter"]')).not.toBeNull();
+    expect(page.querySelectorAll('.document-tag-filter')).toHaveLength(0);
+    expect(page.querySelector('[data-role="document-tag-filter"] option[value="8"]')?.textContent).toContain('เซต');
+  });
+
   it('uploads each selected file independently and shows an outcome for every file', async () => {
     const loadDocuments = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([documentItem]);
     const uploadDocument = vi.fn(async (formData) => {
       const file = formData.get('file');
-      if (file.name === 'bad.doc') throw new Error('รองรับ PDF, DOCX, Markdown และ TXT');
+      if (file.name === 'bad.doc') throw new Error('รองรับ PDF, Markdown และ TXT');
       return { ...documentItem, original_filename: file.name };
     });
     const page = renderPage({ loadDocuments, uploadDocument });
@@ -174,7 +192,9 @@ describe('document library page', () => {
     await flushPromises();
     expect(loadDocuments).toHaveBeenLastCalledWith({ limit: 25, offset: 0, q: 'SETS' });
 
-    page.querySelector('[data-filter-tag-id="1"]').click();
+    const tagFilter = page.querySelector('[data-role="document-tag-filter"]');
+    tagFilter.value = '1';
+    tagFilter.dispatchEvent(new Event('change', { bubbles: true }));
     await flushPromises();
     expect(loadDocuments).toHaveBeenLastCalledWith({ limit: 25, offset: 0, q: 'SETS', tagId: 1 });
   });
@@ -191,7 +211,7 @@ describe('document library page', () => {
     expect(libraryStyles).toMatch(/var\(--(?:surface|glass|line|ink|muted|accent)/);
   });
 
-  it('lays out document cards in a responsive multi-column grid without hiding card actions', async () => {
+  it('lays out compact document cards in a responsive grid with open links and file-type markers', async () => {
     const styles = document.createElement('style');
     styles.dataset.testStyles = 'document-library-grid';
     styles.textContent = readFileSync('src/styles.css', 'utf8');
@@ -210,9 +230,27 @@ describe('document library page', () => {
     expect(getComputedStyle(list).gridTemplateColumns).toContain('repeat(4');
     expect(list.querySelectorAll('.document-library-card')).toHaveLength(2);
     expect(list.querySelectorAll('.document-library-card__preview')).toHaveLength(2);
-    expect(list.querySelector('[data-document-id="4"] [data-role="document-preview-type"]').textContent).toBe('MD');
+    expect(list.querySelectorAll('.document-library-card__preview--placeholder')).toHaveLength(2);
+    expect(list.querySelector('[data-document-id="4"] [data-role="document-file-type"]').textContent).toBe('MD');
     expect(list.querySelectorAll('a[data-route^="/documents/"]')).toHaveLength(2);
     styles.remove();
+  });
+
+  it('opens a document through the full-card link and keeps rename controls separate', async () => {
+    const navigate = vi.fn();
+    const page = renderPage({ loadDocuments: async () => [{ ...documentItem }], navigate });
+    document.body.append(page);
+    await flushPromises();
+
+    const card = page.querySelector('[data-document-id="4"]');
+    const openLink = card.querySelector('.document-library-card__open-link');
+    expect(openLink.getAttribute('aria-label')).toContain('เปิดอ่าน ทฤษฎีเซต');
+    openLink.click();
+    expect(navigate).toHaveBeenCalledWith('/documents/4');
+
+    card.querySelector('[data-action="edit-title"]').click();
+    expect(card.querySelector('[data-role="title-dialog"]').hasAttribute('open')).toBe(true);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -338,96 +376,146 @@ describe('document library page', () => {
     styles.remove();
   });
 
-  it('renders a page-like text preview from extracted Markdown instead of an empty file icon', async () => {
+  it('shows a rendered first-page PDF preview without extracting document text', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined);
+    const loadDocumentContent = vi.fn().mockResolvedValue(new Blob(['pdf-bytes'], { type: 'application/pdf' }));
     const loadDocumentText = vi.fn().mockResolvedValue({
       text: '# Set theory\n\nA set is a collection of distinct objects.\nThe empty set has no elements.',
       text_truncated: false,
       search_available: true,
     });
-    const page = renderPage({
-      loadDocuments: async () => [{ ...documentItem, file_type: 'md' }],
-      loadDocumentText,
-    });
-    document.body.append(page);
-    await flushPromises();
-
-    const preview = page.querySelector('[data-document-id="4"] .document-library-card__preview');
-    const textPreview = preview.querySelector('[data-role="document-text-preview"]');
-    expect(textPreview).not.toBeNull();
-    expect(textPreview.textContent).toContain('Set theory');
-    expect(textPreview.textContent).toContain('A set is a collection');
-    expect(loadDocumentText).toHaveBeenCalledWith(4);
-  });
-
-  it('renders only visible PDF cards as first-page canvas previews', async () => {
-    const observed = [];
-    class TestIntersectionObserver {
-      constructor(callback, options) {
-        this.callback = callback;
-        this.options = options;
-      }
-
-      observe(target) { observed.push({ target, observer: this }); }
-      unobserve() {}
-      disconnect() {}
-      reveal(target) { this.callback([{ target, isIntersecting: true }], this); }
-    }
-    vi.stubGlobal('IntersectionObserver', TestIntersectionObserver);
-    const pdfDocument = {
-      numPages: 4,
-      getPage: vi.fn(async (pageNumber) => ({
-        getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
-        render: vi.fn(() => ({ promise: Promise.resolve() })),
-        pageNumber,
-      })),
-      destroy: vi.fn(),
+    const pdfPage = {
+      getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+      render: vi.fn(() => ({ promise: Promise.resolve() })),
     };
+    const pdfDocument = { numPages: 1, getPage: vi.fn().mockResolvedValue(pdfPage), destroy: vi.fn() };
+    const pdfjs = { getDocument: vi.fn(() => ({ promise: Promise.resolve(pdfDocument), destroy: vi.fn() })) };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({});
-    const loadDocumentContent = vi.fn().mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }));
     const page = renderPage({
-      loadDocuments: async () => [
-        { ...documentItem, file_type: 'pdf' },
-        { ...documentItem, id: 5, file_type: 'pdf', title: 'Another PDF' },
-      ],
+      loadDocuments: async () => [{
+        ...documentItem,
+        title: 'set-theory-notes.pdf',
+        original_filename: 'set-theory-notes.pdf',
+        file_type: 'pdf',
+      }],
       loadDocumentContent,
-      pdfjs: { getDocument: () => ({ promise: Promise.resolve(pdfDocument) }) },
+      loadDocumentText,
+      pdfjs,
     });
     document.body.append(page);
     await flushPromises();
 
-    expect(observed).toHaveLength(2);
-    expect(loadDocumentContent).not.toHaveBeenCalled();
-    const firstPreview = page.querySelector('[data-document-id="4"] .document-library-card__preview');
-    observed.find(({ target }) => target === firstPreview).observer.reveal(firstPreview);
-    await flushPromises();
-
-    expect(loadDocumentContent).toHaveBeenCalledTimes(1);
+    const card = page.querySelector('[data-document-id="4"]');
+    expect(card.querySelector('h2').textContent).toBe('set-theory-notes');
+    expect(card.querySelector('[data-role="document-file-type"]').textContent).toBe('PDF');
+    expect(card.querySelector('.document-library-card__file-icon')).not.toBeNull();
+    expect(card.querySelector('.document-library-card__source')).toBeNull();
+    expect(card.querySelector('[data-role="document-preview"]')).not.toBeNull();
+    expect(card.querySelector('[data-role="document-pdf-preview"]')).not.toBeNull();
     expect(loadDocumentContent).toHaveBeenCalledWith(4);
-    expect(firstPreview.querySelector('canvas[data-role="document-pdf-preview"]')).not.toBeNull();
-    expect(firstPreview.querySelector('canvas').getAttribute('aria-label')).toContain('หน้าแรก');
-    expect(pdfDocument.getPage).toHaveBeenCalledTimes(1);
+    expect(pdfPage.render).toHaveBeenCalledOnce();
+    expect(loadDocumentText).not.toHaveBeenCalled();
   });
 
-  it('shows truthful fallbacks when a document has no readable preview data', async () => {
+  it('shows a blank gray document preview for text files without loading PDF content', async () => {
+    const loadDocumentContent = vi.fn();
+    const styles = document.createElement('style');
+    styles.dataset.testStyles = 'document-library-preview-overlay';
+    styles.textContent = readFileSync('src/styles.css', 'utf8');
+    document.head.append(styles);
     const page = renderPage({
-      loadDocuments: async () => [
-        { ...documentItem, id: 40, file_type: 'txt', title: 'Scanned notes' },
-        { ...documentItem, id: 41, file_type: 'pdf', title: 'Unavailable PDF' },
-      ],
-      loadDocumentText: vi.fn().mockResolvedValue({ text: '', search_available: false }),
-      loadDocumentContent: vi.fn().mockRejectedValue(new Error('Preview unavailable')),
+      loadDocuments: async () => [{
+        ...documentItem,
+        title: 'study-notes.txt',
+        original_filename: 'study-notes.txt',
+        file_type: 'txt',
+      }],
+      loadDocumentContent,
     });
     document.body.append(page);
     await flushPromises();
 
-    const textPreview = page.querySelector('[data-document-id="40"] [data-role="document-preview"]');
-    const pdfPreview = page.querySelector('[data-document-id="41"] [data-role="document-preview"]');
-    expect(textPreview.dataset.previewState).toBe('ready');
-    expect(textPreview.textContent).toContain('ไม่พบข้อความตัวอย่างในเอกสารนี้');
-    expect(textPreview.textContent).not.toContain('A sample document excerpt');
-    expect(pdfPreview.dataset.previewState).toBe('unavailable');
-    expect(pdfPreview.textContent).toContain('ไม่สามารถสร้างตัวอย่างเอกสารได้');
-    expect(pdfPreview.textContent).not.toContain('A sample document excerpt');
+    const card = page.querySelector('[data-document-id="4"]');
+    const preview = card.querySelector('.document-library-card__preview');
+    expect(preview).not.toBeNull();
+    expect(preview.classList.contains('document-library-card__preview--placeholder')).toBe(true);
+    expect(preview.hasAttribute('data-role')).toBe(false);
+    expect(preview.querySelector('[data-role="document-pdf-preview"]')).toBeNull();
+    expect(preview.querySelector('.document-library-card__preview-placeholder-icon')?.getAttribute('aria-hidden')).toBe('true');
+    expect(getComputedStyle(preview).height).toBe('12rem');
+    expect(getComputedStyle(preview).background).toContain('var(--surface-muted)');
+    const iconRule = Array.from(styles.sheet.cssRules).find(({ selectorText }) => (
+      selectorText === '.document-library-page .document-library-card__preview-placeholder-icon'
+    ));
+    expect(iconRule.style.getPropertyValue('border')).toContain('var(--line-strong)');
+    expect(card.querySelector('[data-role="document-file-type"]').textContent).toBe('TXT');
+    expect(loadDocumentContent).not.toHaveBeenCalled();
+    styles.remove();
+  });
+
+  it('uses a plus control for tag management and omits the added date from document cards', async () => {
+    const page = renderPage({ loadDocuments: async () => [{ ...documentItem }] });
+    document.body.append(page);
+    await flushPromises();
+
+    const card = page.querySelector('[data-document-id="4"]');
+    const manageTags = card.querySelector('[data-action="manage-tags"]');
+    expect(manageTags.textContent).toBe('+');
+    expect(manageTags.getAttribute('aria-label')).toBe('แก้แท็กของ ทฤษฎีเซต');
+    expect(card.textContent).not.toContain('เพิ่มเมื่อ');
+  });
+
+  it('extends the PDF preview beneath the rename and delete controls and colors its file badge red', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({});
+    const styles = document.createElement('style');
+    styles.dataset.testStyles = 'document-library-preview-overlay';
+    styles.textContent = readFileSync('src/styles.css', 'utf8');
+    document.head.append(styles);
+    const pdfPage = {
+      getViewport: ({ scale }) => ({ width: 200 * scale, height: 280 * scale }),
+      render: vi.fn(() => ({ promise: Promise.resolve() })),
+    };
+    const pdfjs = {
+      getDocument: () => ({
+        promise: Promise.resolve({ numPages: 1, getPage: async () => pdfPage, destroy: vi.fn() }),
+        destroy: vi.fn(),
+      }),
+    };
+    const page = renderPage({
+      loadDocuments: async () => [{ ...documentItem, file_type: 'pdf', original_filename: 'set-theory.pdf' }],
+      pdfjs,
+    });
+    document.body.append(page);
+    await flushPromises();
+
+    const card = page.querySelector('[data-document-id="4"]');
+    const preview = card.querySelector('[data-role="document-preview"]');
+    const rename = card.querySelector('[data-action="edit-title"]');
+    const remove = card.querySelector('[data-action="delete-document"]');
+    const pdfBadge = card.querySelector('[data-role="document-file-type"]');
+    const previewCanvas = card.querySelector('[data-role="document-pdf-preview"]');
+    expect(getComputedStyle(card).paddingTop).toBe('0.9rem');
+    expect(parseFloat(getComputedStyle(preview).height)).toBeGreaterThanOrEqual(11);
+    expect(getComputedStyle(preview).paddingTop).toBe('0px');
+    expect(getComputedStyle(preview).borderTopWidth).toBe('5px');
+    expect(getComputedStyle(preview).borderTopStyle).toBe('solid');
+    const previewRule = Array.from(styles.sheet.cssRules).find(({ selectorText }) => selectorText === '.document-library-page .document-library-card__preview');
+    const cardRule = Array.from(styles.sheet.cssRules).find(({ selectorText }) => selectorText === '.document-library-page .document-library-card');
+    const previewBorderColor = previewRule.style.getPropertyValue('border-color');
+    expect(previewBorderColor).toBe('inherit');
+    expect(cardRule.style.getPropertyValue('border')).toContain('var(--line)');
+    expect(getComputedStyle(preview).marginTop).toBe('-0.9rem');
+    expect(getComputedStyle(preview).marginLeft).toBe('-0.9rem');
+    expect(getComputedStyle(previewCanvas).borderTopWidth).toBe('0px');
+    expect(getComputedStyle(previewCanvas).borderTopStyle).toBe('none');
+    expect(getComputedStyle(rename).zIndex).toBe('3');
+    expect(getComputedStyle(remove).zIndex).toBe('3');
+    expect(pdfBadge.classList.contains('document-library-card__file-type--pdf')).toBe(true);
+    expect(getComputedStyle(pdfBadge).backgroundColor).toBe('rgb(220, 38, 38)');
+    expect(getComputedStyle(previewCanvas).width).toBe('100%');
+    expect(getComputedStyle(previewCanvas).height).toBe('100%');
+    expect(getComputedStyle(previewCanvas).objectFit).toBe('cover');
   });
 
   it('places hidden fullscreen notices before the bounded page-frame grid row', () => {
@@ -452,13 +540,16 @@ describe('document library page', () => {
     document.body.append(page);
     await flushPromises();
 
+    const titleDialog = page.querySelector('[data-role="title-dialog"]');
     page.querySelector('[data-action="edit-title"]').click();
+    expect(titleDialog.hasAttribute('open')).toBe(true);
     const titleInput = page.querySelector('[data-role="title-input"]');
-    titleInput.value = '  ชื่อใหม่  ';
+    titleInput.value = '  ชื่อใหม่.pdf  ';
     submit(page.querySelector('[data-role="title-form"]'));
     await flushPromises();
     expect(renameDocument).toHaveBeenCalledWith(4, { title: 'ชื่อใหม่' });
     expect(page.querySelector('[data-document-id="4"] h2').textContent).toBe('ชื่อใหม่');
+    expect(titleDialog.hasAttribute('open')).toBe(false);
 
     page.querySelector('[data-action="delete-document"]').click();
     expect(deleteDocument).not.toHaveBeenCalled();

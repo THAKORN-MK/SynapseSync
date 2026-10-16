@@ -124,7 +124,7 @@ describe('document reader page', () => {
     expect(readingArea.textContent).toContain('<img src=x onerror=alert(1)>');
   });
 
-  it('shows that scanned PDFs can be viewed but have no searchable text', async () => {
+  it('opens PDFs directly in the page viewer without a separate extracted-text or search panel', async () => {
     const pdfjs = {
       getDocument: () => ({ promise: Promise.resolve({ numPages: 1, getPage: async () => ({
         getViewport: () => ({ width: 600, height: 800 }),
@@ -132,16 +132,26 @@ describe('document reader page', () => {
       }) }) }),
     };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({});
+    const loadDocumentText = vi.fn(async () => ({
+      text: 'This must remain inside the real PDF viewer.',
+      text_truncated: false,
+      search_text_truncated: false,
+      search_available: true,
+    }));
     const page = renderPage({
       loadDocument: async () => ({ ...documentItem, file_type: 'pdf' }),
-      loadDocumentText: async () => ({ text: '', text_truncated: false, search_text_truncated: false, search_available: false }),
+      loadDocumentText,
       pdfjs,
     });
     document.body.append(page);
     await flushPromises();
 
+    expect(loadDocumentText).not.toHaveBeenCalled();
     expect(page.querySelector('[data-role="pdf-page-status"]')).not.toBeNull();
-    expect(page.textContent).toContain('ไม่พบข้อความค้นหาใน PDF');
+    expect(page.querySelector('[data-role="pdf-page-canvas"]')).not.toBeNull();
+    expect(page.querySelector('[data-role="pdf-text-alternative"]')).toBeNull();
+    expect(page.querySelector('[data-role="pdf-search-unavailable"]')).toBeNull();
+    expect(page.textContent).not.toContain('This must remain inside the real PDF viewer.');
   });
 
   it('fits the first PDF page to the available reader width on load', async () => {
@@ -167,31 +177,83 @@ describe('document reader page', () => {
     expect(page.querySelector('[data-role="pdf-page-canvas"]').style.width).toBe('820px');
   });
 
-  it('provides an expandable readable text alternative for PDFs with extracted text', async () => {
+  it('offers the original PDF download while keeping the existing library return action', async () => {
     const pdfjs = {
       getDocument: () => ({ promise: Promise.resolve({ numPages: 1, getPage: async () => ({
-        getViewport: () => ({ width: 600, height: 800 }),
+        getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+        render: () => ({ promise: Promise.resolve() }),
+      }) }) }),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({});
+    const page = renderPage({
+      loadDocument: async () => ({ ...documentItem, file_type: 'pdf', original_filename: 'บทเรียน เซต.pdf' }),
+      getDocumentDownloadUrl: (id) => `/api/documents/${id}/download`,
+      pdfjs,
+    });
+    document.body.append(page);
+    await flushPromises();
+
+    const download = page.querySelector('[data-action="download-pdf"]');
+    expect(download?.tagName).toBe('A');
+    expect(download?.getAttribute('href')).toBe('/api/documents/4/download');
+    expect(download?.getAttribute('download')).toBe('บทเรียน เซต.pdf');
+    expect(download?.textContent).toContain('ดาวน์โหลด PDF');
+    const back = page.querySelector('[data-route="/documents"]');
+    expect(back?.getAttribute('aria-label')).toBe('กลับคลังเอกสาร');
+  });
+
+  it('does not show a PDF download action for non-PDF documents', async () => {
+    const page = renderPage({
+      loadDocument: async () => ({ ...documentItem, file_type: 'txt' }),
+      loadDocumentText: async () => ({ text: 'Readable text', text_truncated: false, search_text_truncated: false, search_available: true }),
+    });
+    document.body.append(page);
+    await flushPromises();
+
+    expect(page.querySelector('[data-action="download-pdf"]')).toBeNull();
+  });
+
+  it('uses the approved persistent left sidebar for PDF details and reader controls', async () => {
+    const pdfjs = {
+      getDocument: () => ({ promise: Promise.resolve({ numPages: 2, getPage: async () => ({
+        getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
         render: () => ({ promise: Promise.resolve() }),
       }) }) }),
     };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({});
     const page = renderPage({
       loadDocument: async () => ({ ...documentItem, file_type: 'pdf' }),
-      loadDocumentText: async () => ({
-        text: 'Extracted text for screen readers.\nSecond paragraph.',
-        text_truncated: true,
-        search_text_truncated: false,
-        search_available: true,
-      }),
       pdfjs,
     });
     document.body.append(page);
     await flushPromises();
 
-    const alternative = page.querySelector('[data-role="pdf-text-alternative"]');
-    expect(alternative?.querySelector('summary')?.textContent).toContain('อ่านข้อความ');
-    expect(alternative?.querySelector('pre')?.textContent).toBe('Extracted text for screen readers.\nSecond paragraph.');
-    expect(alternative?.textContent).toContain('แสดงข้อความได้บางส่วน');
+    const shell = page.querySelector('.document-reader-shell--pdf');
+    const sidebar = page.querySelector('.document-reader-sidebar');
+    const contentPanel = page.querySelector('.document-reader-panel');
+    const controls = sidebar?.querySelector('.pdf-viewer__toolbar');
+    const back = sidebar?.querySelector('[data-route="/documents"]');
+
+    expect(shell).not.toBeNull();
+    expect(sidebar?.tagName).toBe('ASIDE');
+    expect(sidebar?.contains(page.querySelector('#document-reader-title'))).toBe(true);
+    expect(sidebar?.contains(page.querySelector('[data-action="download-pdf"]'))).toBe(true);
+    expect(sidebar?.contains(page.querySelector('[data-action="delete-document"]'))).toBe(true);
+    expect(sidebar?.querySelector('[data-role="pdf-controls"]')).toBe(controls?.parentElement);
+    expect(back?.textContent.trim()).toBe('');
+    expect(back?.getAttribute('aria-label')).toBe('กลับคลังเอกสาร');
+    expect(contentPanel?.querySelector('.pdf-viewer__toolbar')).toBeNull();
+    expect(contentPanel?.querySelector('[data-role="pdf-pages"]')).not.toBeNull();
+  });
+
+  it('keeps the PDF reader sidebar sticky and the reading surface centered', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/\.document-reader-shell--pdf\s*\{[^}]*grid-template-columns:/s);
+    expect(styles).toMatch(/\.document-reader-shell--pdf \.document-reader-sidebar\s*\{[^}]*position:\s*sticky/s);
+    expect(styles).toMatch(/\.document-reader-sidebar \.pdf-viewer__toolbar\s*\{[^}]*display:\s*grid/s);
+    expect(styles).toMatch(/\.pdf-viewer\s*\{[^}]*margin-inline:\s*auto/s);
+    expect(styles).toMatch(/\.pdf-viewer__pages\s*\{[^}]*margin-inline:\s*auto/s);
+    expect(styles).toMatch(/\.document-reader-shell--pdf:fullscreen,\s*\.document-reader-shell--fullscreen\s*\{[^}]*position:\s*fixed/s);
   });
 
   it('keeps PDF pages on the browser scroll and leaves one scroll area in fullscreen', async () => {
@@ -224,10 +286,6 @@ describe('document reader page', () => {
     expect(getComputedStyle(contentPanel).overflow).toBe('visible');
     expect(getComputedStyle(pageFrame).overflow).toBe('visible');
     expect(getComputedStyle(pdfPage).overflow).toBe('visible');
-    const textAlternative = page.querySelector('[data-role="pdf-text-alternative"] pre');
-    expect(getComputedStyle(textAlternative).overflow).toBe('visible');
-    expect(getComputedStyle(textAlternative).maxHeight).toBe('none');
-
     viewer.classList.add('pdf-viewer--fullscreen');
     expect(getComputedStyle(pageFrame).overflow).toBe('auto');
     expect(getComputedStyle(pdfPage).overflow).toBe('visible');
@@ -290,6 +348,24 @@ describe('document reader page', () => {
 
     expect(saveProgress).toHaveBeenCalledTimes(1);
     expect(saveProgress).toHaveBeenCalledWith(4, { scroll_ratio: 0.5 });
+  });
+
+  it('keeps title editing compact beside the name and makes deletion visibly destructive', async () => {
+    const page = renderPage();
+    document.body.append(page);
+    await flushPromises();
+
+    const title = page.querySelector('#document-reader-title');
+    const editButton = page.querySelector('[data-action="edit-title"]');
+    const deleteButton = page.querySelector('[data-action="delete-document"]');
+
+    expect(editButton.parentElement).toBe(title.parentElement);
+    expect(editButton.getAttribute('aria-label')).toBe('แก้ชื่อเอกสาร');
+    expect(editButton.textContent.trim()).toBe('');
+    expect(editButton.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(deleteButton.classList.contains('button-danger')).toBe(true);
+    expect(deleteButton.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(deleteButton.textContent).toContain('ลบเอกสาร');
   });
 
   it('renames, edits tags immediately, and confirms deletion back to the library', async () => {

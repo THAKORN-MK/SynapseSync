@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { renderTutorPage } from '../src/pages/TutorPage.js';
 
 const tagCatalog = {
@@ -98,6 +99,54 @@ describe('AI tutor page', () => {
       expect(select.getAttribute('aria-label') || select.labels[0]?.textContent.trim()).toBeTruthy();
     }
     expect(selects.slice(0, 3).map(({ value }) => value)).toEqual(['gemini', 'gemini-3.8-flash', 'th']);
+  });
+
+  it('keeps the composer submit control as an icon with an accessible action label', async () => {
+    const page = await renderTutorPage();
+    const submit = page.querySelector('[data-action="send-tutor-message"]');
+    const icon = submit.querySelector('svg[aria-hidden="true"]');
+
+    expect(icon).not.toBeNull();
+    expect(icon.querySelectorAll('path')).toHaveLength(2);
+    expect(icon.querySelector('path')?.getAttribute('d')).toBe('m22 2-7 20-4-9-9-4Z');
+    expect(submit.textContent.trim()).toBe('');
+    expect(submit.getAttribute('aria-label')).toBe('ส่งคำถาม');
+  });
+
+  it('starts the composer at two rows and grows until ten rows before scrolling', async () => {
+    const page = await renderTutorPage();
+    const input = page.querySelector('[data-role="tutor-input"]');
+    expect(input.rows).toBe(2);
+    expect(input.dataset.maxRows).toBe('10');
+
+    let contentHeight = 48;
+    Object.defineProperty(input, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight,
+    });
+    const initialHeight = Number.parseFloat(input.style.height);
+
+    contentHeight = 140;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const expandedHeight = Number.parseFloat(input.style.height);
+    expect(expandedHeight).toBeGreaterThan(initialHeight);
+    expect(input.style.overflowY).toBe('hidden');
+
+    contentHeight = 500;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const cappedHeight = Number.parseFloat(input.style.height);
+    expect(cappedHeight).toBeLessThan(contentHeight);
+    expect(cappedHeight).toBeGreaterThan(expandedHeight);
+    expect(input.style.overflowY).toBe('auto');
+  });
+
+  it('keeps Tutor inside the shared app shell and uses theme tokens for its workspace', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).not.toMatch(/#app\.app--tutor > \.app-navigation[\s\S]{0,100}display:\s*none/);
+    expect(styles).toMatch(/#app\.app--tutor\s*\{[^}]*--tutor-background:\s*var\(--page\)/);
+    expect(styles).toMatch(/#app\.app--tutor\s*\{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)/);
+    expect(styles).toMatch(/#app\.app--tutor > main\s*\{[^}]*padding:\s*0 0 calc\(5\.8rem \+ env\(safe-area-inset-bottom\)\)/);
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-send-button\s*\{[^}]*min-height:\s*2\.45rem/);
   });
 
   it('does not submit a blank question and asks the learner to enter one', async () => {
@@ -319,6 +368,424 @@ describe('AI tutor page', () => {
       provider_id: 'openai',
       model_id: 'gpt-5.4-mini',
     }));
+  });
+
+  it('opens the provider and model picker from the composer and closes after choosing a model', async () => {
+    const createConversation = vi.fn().mockResolvedValue(conversation());
+    const { page } = mount({ createConversation });
+    await flushPromises();
+
+    const trigger = page.querySelector('[data-action="open-tutor-model-picker"]');
+    const picker = page.querySelector('[data-role="tutor-model-picker"]');
+    expect(trigger).not.toBeNull();
+    expect(picker?.hidden).toBe(true);
+
+    trigger.querySelector('.tutor-provider-trigger__label').click();
+    expect(picker.hidden).toBe(false);
+    const providerToggle = picker.querySelector('[data-action="toggle-tutor-provider-options"]');
+    expect(providerToggle.textContent).toContain('Gemini');
+    expect(picker.querySelector('[data-role="tutor-provider-choices"]').hidden).toBe(true);
+    expect(picker.querySelector('[data-role="tutor-model-choices"]').hidden).toBe(false);
+    providerToggle.click();
+    expect(picker.querySelector('[data-role="tutor-model-choices"]').hidden).toBe(true);
+    expect([...picker.querySelectorAll('.tutor-provider-choice')].map((button) => button.textContent.trim())).toEqual(['Gemini', 'OpenAI']);
+    picker.querySelector('.tutor-provider-choice[data-provider-id="openai"]').click();
+    expect(picker.querySelector('[data-role="tutor-provider-choices"]').hidden).toBe(true);
+    expect(picker.querySelector('[data-role="tutor-model-choices"]').hidden).toBe(false);
+    expect(picker.hidden).toBe(false);
+    const modelChoices = [...picker.querySelectorAll('.tutor-model-choice')];
+    expect(modelChoices.map((button) => button.dataset.modelId)).toEqual(['gpt-5.4-mini']);
+    expect(modelChoices[0].querySelector('.tutor-model-choice__check')?.textContent).toBe('✓');
+    modelChoices[0].click();
+    expect(picker.hidden).toBe(true);
+    expect(trigger.textContent).toContain('OpenAI');
+    expect(trigger.getAttribute('aria-label')).toContain('gpt-5.4-mini');
+
+    page.querySelector('[data-role="tutor-input"]').value = 'ช่วยอธิบายเรื่องเซต';
+    submit(page.querySelector('[data-role="tutor-message-form"]'));
+    await flushPromises();
+    expect(createConversation).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'ช่วยอธิบายเรื่องเซต',
+      provider_id: 'openai',
+      model_id: 'gpt-5.4-mini',
+    }));
+  });
+
+  it('keeps the provider trigger caret decorative and out of the accessible control name', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    const trigger = page.querySelector('[data-action="open-tutor-model-picker"]');
+    const caret = trigger.querySelector('.tutor-provider-trigger__chevron');
+
+    expect(caret).not.toBeNull();
+    expect(caret.getAttribute('aria-hidden')).toBe('true');
+    expect(trigger.getAttribute('aria-label')).toContain('Gemini');
+  });
+
+  it('keeps the provider picker caret decorative and out of the accessible control name', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    page.querySelector('[data-action="open-tutor-model-picker"]').click();
+    const toggle = page.querySelector('[data-action="toggle-tutor-provider-options"]');
+    const caret = toggle.querySelector('.tutor-provider-selector__chevron');
+
+    expect(caret).not.toBeNull();
+    expect(caret.getAttribute('aria-hidden')).toBe('true');
+    expect(toggle.getAttribute('aria-label')).toContain('Gemini');
+  });
+
+  it('keeps provider choices in a separate readable menu and marks the selected model', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    page.querySelector('[data-action="open-tutor-model-picker"]').click();
+    const picker = page.querySelector('[data-role="tutor-model-picker"]');
+    const providerToggle = picker.querySelector('[data-action="toggle-tutor-provider-options"]');
+    const providerChoices = picker.querySelector('[data-role="tutor-provider-choices"]');
+
+    expect(providerToggle.textContent).toContain('Gemini');
+    expect(providerToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(providerChoices.hidden).toBe(true);
+    const selectedGeminiModel = picker.querySelector('.tutor-model-choice[aria-pressed="true"]');
+    expect(selectedGeminiModel?.dataset.modelId).toBe('gemini-3.8-flash');
+    expect(selectedGeminiModel?.querySelector('.tutor-model-choice__check')?.textContent).toBe('✓');
+
+    providerToggle.click();
+    expect(providerChoices.hidden).toBe(false);
+    expect(providerToggle.getAttribute('aria-expanded')).toBe('true');
+    providerChoices.querySelector('.tutor-provider-choice[data-provider-id="openai"]').click();
+
+    expect(providerChoices.hidden).toBe(true);
+    expect(providerToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(providerToggle.textContent).toContain('OpenAI');
+    expect(picker.querySelector('.tutor-model-choice[aria-pressed="true"]')?.dataset.modelId).toBe('gpt-5.4-mini');
+  });
+
+  it('keeps the selected model when the already-selected provider is confirmed again', async () => {
+    const catalog = {
+      providers: [
+        { id: 'gemini', name: 'Gemini', models: [
+          { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', supports_images: false },
+          { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', supports_images: false },
+        ] },
+        { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', supports_images: false }] },
+      ],
+      default_selection: { provider_id: 'gemini', model_id: 'gemini-3.8-flash' },
+    };
+    const { page } = mount({ loadProviders: vi.fn().mockResolvedValue(catalog) });
+    await flushPromises();
+    const model = page.querySelector('[data-role="tutor-model"]');
+    model.value = 'gemini-3.5-flash';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+
+    page.querySelector('[data-action="open-tutor-model-picker"]').click();
+    page.querySelector('[data-action="toggle-tutor-provider-options"]').click();
+    page.querySelector('.tutor-provider-choice[data-provider-id="gemini"]').click();
+
+    expect(page.querySelector('[data-role="tutor-model"]').value).toBe('gemini-3.5-flash');
+    expect(page.querySelector('.tutor-model-choice[aria-pressed="true"]')?.dataset.modelId).toBe('gemini-3.5-flash');
+  });
+
+  it('shows a provider with no models as empty and disables selection when the catalog has no providers', async () => {
+    const { page: noModelPage } = mount({
+      loadProviders: vi.fn().mockResolvedValue({ providers: [{ id: 'claude', name: 'Claude', models: [] }] }),
+    });
+    await flushPromises();
+    noModelPage.querySelector('[data-action="open-tutor-model-picker"]').click();
+    expect(noModelPage.querySelector('[data-role="tutor-model-empty"]')?.textContent).toContain('ไม่มีโมเดล');
+    expect(noModelPage.querySelectorAll('.tutor-model-choice')).toHaveLength(0);
+
+    const { page: noProviderPage } = mount({
+      loadProviders: vi.fn().mockResolvedValue({ providers: [], default_selection: null }),
+    });
+    await flushPromises();
+    expect(noProviderPage.querySelector('[data-action="open-tutor-model-picker"]').disabled).toBe(true);
+  });
+
+  it('closes the model dialog with Escape and restores focus to its composer trigger', async () => {
+    const { page } = mount();
+    await flushPromises();
+    const trigger = page.querySelector('[data-action="open-tutor-model-picker"]');
+    const picker = page.querySelector('[data-role="tutor-model-picker"]');
+    trigger.click();
+
+    expect(page.ownerDocument.activeElement).toBe(page.querySelector('[data-action="toggle-tutor-provider-options"]'));
+    picker.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(picker.hidden).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(page.ownerDocument.activeElement).toBe(trigger);
+  });
+
+  it('closes only the topmost Tutor overlay for each Escape press', async () => {
+    const { page } = mount();
+    await flushPromises();
+    const history = page.querySelector('[data-role="tutor-history"]');
+    const historyToggle = page.querySelector('[data-action="toggle-tutor-history"]');
+    const trigger = page.querySelector('[data-action="open-tutor-model-picker"]');
+    const picker = page.querySelector('[data-role="tutor-model-picker"]');
+
+    historyToggle.click();
+    trigger.click();
+    page.ownerDocument.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(picker.hidden).toBe(true);
+    expect(history.hidden).toBe(false);
+    expect(page.ownerDocument.activeElement).toBe(trigger);
+
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(history.hidden).toBe(true);
+    expect(page.ownerDocument.activeElement).toBe(historyToggle);
+  });
+
+  it('disables model choices that cannot process an attached image and re-enables supported choices', async () => {
+    const mixedCatalog = {
+      providers: [
+        { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-vision', name: 'GPT Vision', supports_images: true }] },
+        { id: 'gemini', name: 'Gemini', models: [{ id: 'gemini-text', name: 'Gemini Text', supports_images: false }] },
+      ],
+      default_selection: { provider_id: 'openai', model_id: 'gpt-vision' },
+    };
+    const { page } = mount({ loadProviders: vi.fn().mockResolvedValue(mixedCatalog) });
+    await flushPromises();
+    chooseImages(page, [new File(['image'], 'diagram.png', { type: 'image/png' })]);
+    page.querySelector('[data-action="open-tutor-model-picker"]').click();
+
+    page.querySelector('[data-action="toggle-tutor-provider-options"]').click();
+    const geminiChoice = page.querySelector('.tutor-provider-choice[data-provider-id="gemini"]');
+    geminiChoice.click();
+    expect(page.querySelector('.tutor-model-choice[data-model-id="gemini-text"]').disabled).toBe(true);
+
+    page.querySelector('[data-action="toggle-tutor-provider-options"]').click();
+    page.querySelector('.tutor-provider-choice[data-provider-id="openai"]').click();
+    expect(page.querySelector('.tutor-model-choice[data-model-id="gpt-vision"]').disabled).toBe(false);
+  });
+
+  it('uses recognizable rail icons with labels revealed on hover or keyboard focus', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    const rail = page.querySelector('[data-role="tutor-left-rail"]');
+    const actions = [...rail.querySelectorAll('.tutor-left-rail__button')];
+    const labels = ['เริ่มคำถามใหม่', 'เปิดประวัติการถาม', 'หน้าหลัก', 'คลังข้อสอบ', 'คลังเอกสาร'];
+
+    expect(actions.map((action) => action.getAttribute('data-tooltip'))).toEqual(labels);
+    expect(actions.map((action) => action.getAttribute('aria-label'))).toEqual(labels);
+    expect(actions.every((action) => action.querySelector('svg[aria-hidden="true"]'))).toBe(true);
+    expect(actions.every((action) => !action.hasAttribute('title'))).toBe(true);
+
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/\.tutor-left-rail__button\[data-tooltip\]:hover::after/);
+    expect(styles).toMatch(/\.tutor-left-rail__button\[data-tooltip\]:focus-visible::after/);
+    expect(styles).toMatch(/content:\s*attr\(data-tooltip\)/);
+  });
+
+  it('keeps the conversation before history in document order for narrow screens', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    const layout = page.querySelector('.tutor-layout');
+    expect(layout.querySelector('[data-role="tutor-left-rail"]')).not.toBeNull();
+    expect(layout.children[0].classList.contains('tutor-left-rail')).toBe(true);
+    expect(layout.querySelector('.tutor-conversation__toolbar')).not.toBeNull();
+    expect(layout.querySelector('[data-role="tutor-context-panel"]')).toBeNull();
+    expect(layout.children[layout.children.length - 1].classList.contains('tutor-conversation')).toBe(true);
+    expect(page.querySelector('.tutor-heading')).toBeNull();
+  });
+
+  it('opens history from the left rail and closes the drawer after a conversation is selected', async () => {
+    const saved = conversation({ id: 7 });
+    const { page } = mount({
+      loadConversations: vi.fn().mockResolvedValue([saved]),
+      loadConversation: vi.fn().mockResolvedValue(saved),
+    });
+    await flushPromises();
+
+    const history = page.querySelector('[data-role="tutor-history"]');
+    const historyToggle = page.querySelector('[data-action="toggle-tutor-history"]');
+    expect(history.hidden).toBe(true);
+    expect(historyToggle.getAttribute('aria-expanded')).toBe('false');
+
+    historyToggle.click();
+    expect(history.hidden).toBe(false);
+    expect(historyToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(history.querySelector('[data-role="tutor-search"]')).not.toBeNull();
+    expect(history.querySelector('[data-role="tutor-tag-filter"]')).not.toBeNull();
+
+    history.querySelector('[data-conversation-id="7"] [data-action="open-conversation"]').click();
+    await flushPromises();
+    expect(history.hidden).toBe(true);
+    expect(historyToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(page.querySelector('[data-role="tutor-conversation-title"]').textContent).toBe(saved.title);
+  });
+
+  it('dismisses history drawer without clearing its searchable controls', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    const history = page.querySelector('[data-role="tutor-history"]');
+    const close = history.querySelector('[data-action="close-tutor-history"]');
+    expect(close.getAttribute('aria-label')).toBe('ปิดประวัติการถาม');
+    expect(close.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(close.classList.contains('button-danger')).toBe(true);
+
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-history__close\s*\{[^}]*display:\s*grid;[^}]*place-items:\s*center;[^}]*line-height:\s*1/);
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-history__close\s*\{[^}]*background:\s*var\(--error-soft\)/);
+
+    page.querySelector('[data-action="toggle-tutor-history"]').click();
+    close.click();
+
+    expect(history.hidden).toBe(true);
+    expect(history.querySelector('[data-role="tutor-search"]')).not.toBeNull();
+    expect(history.querySelector('[data-role="tutor-tag-filter"]')).not.toBeNull();
+  });
+
+  it('removes the empty collapsed context rail and gives its column back to the conversation', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    expect(page.querySelector('[data-role="tutor-context-panel"]')).toBeNull();
+    expect(page.querySelector('[data-action="toggle-tutor-context"]')).toBeNull();
+
+    const app = document.createElement('div');
+    app.id = 'app';
+    app.className = 'app--tutor';
+    const stylesheet = document.createElement('style');
+    stylesheet.textContent = readFileSync('src/styles.css', 'utf8');
+    app.append(stylesheet, page);
+    document.body.replaceChildren(app);
+
+    const layout = page.querySelector('.tutor-layout');
+    const collapsedColumns = getComputedStyle(layout).gridTemplateColumns;
+    expect(collapsedColumns).toContain('3.8rem');
+    expect(collapsedColumns).not.toContain('3.25rem');
+
+    layout.classList.add('tutor-layout--history-open');
+    const expandedColumns = getComputedStyle(layout).gridTemplateColumns;
+    expect(expandedColumns).toContain('15rem');
+    expect(expandedColumns).not.toContain('3.25rem');
+  });
+
+  it('opens the subject and tag picker in a dialog instead of the right context panel', async () => {
+    const { page } = mount();
+    await flushPromises();
+
+    const trigger = page.querySelector('[data-action="open-tutor-tag-picker"]');
+    const dialogLayer = page.querySelector('[data-role="tutor-tag-dialog-layer"]');
+    const dialog = page.querySelector('[data-role="tutor-tag-dialog"]');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-controls')).toBe(dialog.id);
+    expect(dialogLayer.hidden).toBe(true);
+
+    trigger.click();
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(dialogLayer.hidden).toBe(false);
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.querySelector('.tag-picker')).not.toBeNull();
+    expect(dialog.querySelector('.tag-picker-create').hidden).toBe(true);
+    expect(page.querySelector('[data-role="tutor-context-panel"]')).toBeNull();
+    expect(page.ownerDocument.activeElement).toBe(dialog.querySelector('.tag-picker-search'));
+
+    dialog.querySelector('[data-action="close-tutor-tag-dialog"]').click();
+    expect(dialogLayer.hidden).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(page.ownerDocument.activeElement).toBe(trigger);
+  });
+
+  it('keeps the tag dialog close mark red in its default and hover states', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-tag-dialog__close\s*\{[^}]*color:\s*var\(--error\)/);
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-tag-dialog__close:hover\s*\{[^}]*color:\s*var\(--error\)/);
+  });
+
+  it('closes the tag dialog on Escape and restores focus to its trigger', async () => {
+    const { page } = mount();
+    await flushPromises();
+    const trigger = page.querySelector('[data-action="open-tutor-tag-picker"]');
+    const dialog = page.querySelector('[data-role="tutor-tag-dialog"]');
+
+    trigger.click();
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(page.querySelector('[data-role="tutor-tag-dialog-layer"]').hidden).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(page.ownerDocument.activeElement).toBe(trigger);
+  });
+
+  it('keeps the original color-chip tag picker inside the floating dialog', async () => {
+    const { page } = mount();
+    await flushPromises();
+    page.querySelector('[data-action="open-tutor-tag-picker"]').click();
+
+    const dialog = page.querySelector('[data-role="tutor-tag-dialog"]');
+    const search = dialog.querySelector('.tag-picker-search');
+    const list = dialog.querySelector('.tag-picker-groups');
+    const subject = list.querySelector('[data-tag-id="1"]');
+    const topic = list.querySelector('[data-tag-id="2"]');
+
+    expect(search.placeholder).toBe('ค้นหาวิชา หรือหัวข้อ');
+    expect(list.getAttribute('role')).toBe('group');
+    expect(list.getAttribute('aria-label')).toBe('รายการวิชาและหัวข้อ');
+    expect(list.classList.contains('tutor-tag-dialog__chips')).toBe(true);
+    expect(subject.getAttribute('aria-pressed')).toBe('false');
+    expect(topic.getAttribute('aria-pressed')).toBe('false');
+
+    subject.click();
+    topic.click();
+    expect(subject.getAttribute('aria-pressed')).toBe('true');
+    expect(topic.getAttribute('aria-pressed')).toBe('true');
+    subject.click();
+    expect(subject.getAttribute('aria-pressed')).toBe('false');
+    expect(topic.getAttribute('aria-pressed')).toBe('true');
+
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-tag-dialog__chips\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;/);
+    expect(styles).toMatch(/\.tag-picker-tag\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--tag-color\)/);
+  });
+
+  it('keeps keyboard focus inside the tag dialog while it is open', async () => {
+    const { page } = mount();
+    await flushPromises();
+    const trigger = page.querySelector('[data-action="open-tutor-tag-picker"]');
+    const dialog = page.querySelector('[data-role="tutor-tag-dialog"]');
+    const closeButton = dialog.querySelector('[data-action="close-tutor-tag-dialog"]');
+    const lastControl = [...dialog.querySelectorAll('.tag-picker-tag')].at(-1);
+
+    trigger.click();
+    closeButton.focus();
+    const backwardTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true });
+    closeButton.dispatchEvent(backwardTab);
+    expect(page.ownerDocument.activeElement).toBe(lastControl);
+
+    lastControl.focus();
+    lastControl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(page.ownerDocument.activeElement).toBe(closeButton);
+  });
+
+  it('uses tags selected in the tag dialog when starting a tutor conversation', async () => {
+    const createConversation = vi.fn().mockResolvedValue(conversation());
+    const { page } = mount({ createConversation });
+    await flushPromises();
+
+    page.querySelector('[data-action="open-tutor-tag-picker"]').click();
+    page.querySelector('[data-role="tutor-tag-dialog"] [data-tag-id="2"]').click();
+    page.querySelector('[data-role="tutor-input"]').value = 'ช่วยอธิบายแรง';
+    submit(page.querySelector('[data-role="tutor-message-form"]'));
+    await flushPromises();
+
+    expect(createConversation).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'ช่วยอธิบายแรง',
+      tag_ids: [2],
+    }));
+  });
+
+  it('positions the model picker as an anchored drop-up instead of a centered modal', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/#app\.app--tutor \.tutor-model-picker\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100%/);
   });
 
   it('defaults to Thai answers and sends the selected English language with a new message', async () => {

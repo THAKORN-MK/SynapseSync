@@ -358,6 +358,13 @@ describe('document library API client', () => {
     }));
   });
 
+  it('returns a validated same-origin PDF download route without exposing a storage URL', () => {
+    expect(apiClient.getDocumentDownloadUrl).toBeTypeOf('function');
+    expect(apiClient.getDocumentDownloadUrl(5)).toBe('/api/documents/5/download');
+    expect(() => apiClient.getDocumentDownloadUrl(0)).toThrow(TypeError);
+    expect(() => apiClient.getDocumentDownloadUrl('../5')).toThrow(TypeError);
+  });
+
   it('uses the expected routes and methods for document details and updates', async () => {
     const fetchImpl = vi.fn().mockImplementation(async (_url, options = {}) => ({
       ok: true,

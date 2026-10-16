@@ -1,5 +1,6 @@
 import { createAtomVisual } from '../components/AtomVisual.js';
 import { renderDashboardCharts } from '../dashboard/dashboard-charts.js';
+import { normalizeTagColor } from '../tags/tag-colors.js';
 
 function element(tagName, className = '', text) {
   const value = document.createElement(tagName);
@@ -74,7 +75,7 @@ function sectionError(panel, role, error) {
   panel.append(message);
 }
 
-function renderDeadlineList(panel, deadlines = [], navigate) {
+function renderDeadlineList(panel, deadlines = [], navigate, tagColorsById = new Map(), tagColorsByName = new Map()) {
   const now = Date.now();
   const upcoming = asArray(deadlines)
     .filter((deadline) => deadline?.status !== 'completed' && deadline?.is_completed !== true)
@@ -95,10 +96,18 @@ function renderDeadlineList(panel, deadlines = [], navigate) {
     const item = element('li', 'home-upcoming-item');
     item.dataset.role = 'home-upcoming-task';
     item.dataset.deadlineId = String(deadline.id);
+    const subjectKey = String(deadline?.subject || '').trim().toLocaleLowerCase();
+    const hasTagId = deadline?.tag_id !== undefined && deadline?.tag_id !== null && deadline?.tag_id !== '';
+    const tagColor = tagColorsById.get(String(deadline.tag_id))
+      || (!hasTagId ? tagColorsByName.get(subjectKey) : null)
+      || 'violet';
+    item.dataset.color = tagColor;
     const details = element('div', 'home-upcoming-item__details');
+    const subject = element('span', 'tag-chip home-upcoming-item__subject', deadline.subject || 'วิชาอื่น');
+    subject.dataset.color = tagColor;
     details.append(
       element('strong', '', deadline.title || 'งานที่ยังไม่มีชื่อ'),
-      element('span', '', deadline.subject || 'วิชาอื่น'),
+      subject,
     );
     const time = element('time', 'home-upcoming-item__time', formatDateTime(deadline.due_at));
     if (deadline.due_at) time.dateTime = deadline.due_at;
@@ -109,7 +118,7 @@ function renderDeadlineList(panel, deadlines = [], navigate) {
   panel.append(list, createAction('ดูงานทั้งหมด', '/deadlines', navigate));
 }
 
-function renderRecentList(panel, items, { pathFor, titleFor, emptyMessage, navigate }) {
+function renderRecentList(panel, items, { pathFor, titleFor, detailFor, iconText, emptyMessage, navigate }) {
   const rows = asArray(items);
   if (!rows.length) {
     panel.append(element('p', 'home-section-message', emptyMessage));
@@ -117,15 +126,38 @@ function renderRecentList(panel, items, { pathFor, titleFor, emptyMessage, navig
   }
   const list = element('ul', 'home-recent-list');
   for (const item of rows.slice(0, 3)) {
-    const link = element('a', 'home-recent-item', titleFor(item) || 'รายการที่ไม่มีชื่อ');
+    const title = titleFor(item) || 'รายการที่ไม่มีชื่อ';
+    const link = element('a', 'home-recent-item');
     const path = pathFor(item);
     link.href = path;
     link.dataset.route = path;
+    if (item?.kind) link.dataset.kind = item.kind;
+    link.setAttribute('aria-label', `${title} · ${detailFor(item)}`);
     link.addEventListener('click', (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
       navigate?.(path);
     });
+    const icon = element('span', 'home-recent-item__icon', typeof iconText === 'function' ? iconText(item) : iconText);
+    icon.setAttribute('aria-hidden', 'true');
+    const details = element('span', 'home-recent-item__details');
+    details.append(
+      element('strong', 'home-recent-item__title', title),
+      element('span', 'home-recent-item__meta', detailFor(item)),
+    );
+    const tags = asArray(item?.tags).filter((tag) => tag?.name).slice(0, 1);
+    if (tags.length) {
+      const tagRow = element('span', 'home-recent-item__tags');
+      for (const tag of tags) {
+        const chip = element('span', 'tag-chip home-recent-item__tag', tag.name);
+        chip.dataset.color = normalizeTagColor(tag.color);
+        tagRow.append(chip);
+      }
+      details.append(tagRow);
+    }
+    const arrow = element('span', 'home-recent-item__arrow', '↗');
+    arrow.setAttribute('aria-hidden', 'true');
+    link.append(icon, details, arrow);
     list.append(link);
   }
   panel.append(list);
@@ -145,9 +177,11 @@ function createFeatureCards(navigate) {
     const link = element('a', 'home-feature-card');
     link.href = path;
     link.dataset.route = path;
+    link.setAttribute('aria-label', `${title}: ${description}`);
+    link.title = description;
     const icon = element('span', 'home-feature-card__icon', iconText);
     icon.setAttribute('aria-hidden', 'true');
-    link.append(icon, element('strong', '', title), element('span', '', description));
+    link.append(icon, element('strong', '', title));
     link.addEventListener('click', (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
@@ -163,6 +197,7 @@ export function renderHomePage({
   onNavigate,
   loadOverview,
   loadDeadlines,
+  loadTags,
   loadProgress,
   loadQuizzes,
   loadDocuments,
@@ -204,17 +239,50 @@ export function renderHomePage({
   const overviewPanel = element('div', 'home-dashboard-content');
   const tasksPanel = createPanel('งานใกล้ถึงกำหนด', 'เรียงจากกำหนดส่งที่ใกล้ที่สุด', 'home-upcoming');
   const latestPanel = createPanel('ผลการฝึกล่าสุด', 'คะแนนล่าสุดจากประวัติการทำข้อสอบ', 'home-progress');
-  const recentPanel = createPanel('ข้อสอบล่าสุด', '', 'home-recent-quizzes');
-  const documentsPanel = createPanel('เอกสารล่าสุด', '', 'home-recent-documents');
+  const recentPanel = createPanel('รายการล่าสุด', 'ข้อสอบและเอกสารที่ใช้ล่าสุด', 'home-recent');
+  const recentPanelHeading = recentPanel.querySelector('.home-panel__heading');
+  let recentQuizzes = null;
+  let recentDocuments = null;
+  let recentQuizError = null;
+  let recentDocumentError = null;
+  const updateRecentPanel = () => {
+    recentPanel.replaceChildren(recentPanelHeading);
+    const items = [
+      ...asArray(recentQuizzes).slice(0, 1).map((item) => ({ ...item, kind: 'quiz' })),
+      ...asArray(recentDocuments).slice(0, 1).map((item) => ({ ...item, kind: 'document' })),
+    ];
+    if (items.length) {
+      renderRecentList(recentPanel, items, {
+        pathFor: (item) => item.kind === 'quiz' ? `/quizzes/${item.id}` : `/documents/${item.id}`,
+        titleFor: (item) => item.title || item.original_filename,
+        detailFor: (item) => item.kind === 'quiz'
+          ? 'ข้อสอบล่าสุด · คลังข้อสอบ'
+          : `เอกสารล่าสุด · ${String(item.file_type || 'เอกสาร').toUpperCase()}`,
+        iconText: (item) => item.kind === 'quiz' ? '▤' : '▧',
+        emptyMessage: 'ยังไม่มีรายการล่าสุด',
+        navigate: onNavigate,
+      });
+      return;
+    }
+    if (recentQuizzes === null || recentDocuments === null) {
+      recentPanel.append(element('p', 'home-section-message', 'กำลังโหลดรายการล่าสุด…'));
+      return;
+    }
+    const error = recentQuizError || recentDocumentError;
+    if (error) {
+      sectionError(recentPanel, 'home-recent-error', error);
+      return;
+    }
+    recentPanel.append(element('p', 'home-section-message', 'ยังไม่มีข้อสอบหรือเอกสารที่ใช้ล่าสุด'));
+  };
   tasksPanel.append(element('p', 'home-section-message', 'กำลังโหลดงาน…'));
   latestPanel.append(element('p', 'home-section-message', 'กำลังโหลดผลการฝึก…'));
-  recentPanel.append(element('p', 'home-section-message', 'กำลังโหลดข้อสอบ…'));
-  documentsPanel.append(element('p', 'home-section-message', 'กำลังโหลดเอกสาร…'));
-  overviewPanel.append(tasksPanel, latestPanel, recentPanel, documentsPanel);
+  recentPanel.append(element('p', 'home-section-message', 'กำลังโหลดรายการล่าสุด…'));
 
   const shortcutsPanel = createPanel('ทางลัด', 'เปิดส่วนที่คุณต้องการได้ทันที', 'home-shortcuts');
   shortcutsPanel.append(createFeatureCards(onNavigate));
-  page.append(heading, chartPanel, overviewPanel, shortcutsPanel);
+  overviewPanel.append(tasksPanel, latestPanel, recentPanel, shortcutsPanel);
+  page.append(heading, chartPanel, overviewPanel);
 
   let chartRequest = 0;
   async function refreshCharts(selectedPeriod) {
@@ -253,12 +321,33 @@ export function renderHomePage({
   }
 
   async function refreshPage() {
+    const loadDeadlinesWithTagColors = async () => {
+      const deadlinesRequest = typeof loadDeadlines === 'function'
+        ? Promise.resolve().then(() => loadDeadlines())
+        : Promise.resolve([]);
+      const tagsRequest = typeof loadTags === 'function'
+        ? Promise.resolve().then(() => loadTags()).catch(() => ({ tags: [] }))
+        : Promise.resolve({ tags: [] });
+      const [deadlines, catalog] = await Promise.all([deadlinesRequest, tagsRequest]);
+      const tagColorsById = new Map();
+      const tagColorsByName = new Map();
+      for (const tag of asArray(catalog?.tags)) {
+        const name = String(tag?.name || '').trim().toLocaleLowerCase();
+        if (name) tagColorsByName.set(name, normalizeTagColor(tag.color));
+        const id = Number(tag?.id);
+        if (Number.isSafeInteger(id) && id > 0) {
+          tagColorsById.set(String(id), normalizeTagColor(tag.color));
+        }
+      }
+      return { deadlines, tagColorsById, tagColorsByName };
+    };
+
     page.ready = Promise.all([
       refreshCharts('day'),
-      loadPanel(loadDeadlines, [], [], (data, error) => {
+      loadPanel(loadDeadlinesWithTagColors, [], { deadlines: [], tagColorsById: new Map(), tagColorsByName: new Map() }, (data, error) => {
         tasksPanel.replaceChildren(tasksPanel.querySelector('.home-panel__heading'));
         if (error) return sectionError(tasksPanel, 'home-deadlines-error', error);
-        renderDeadlineList(tasksPanel, data, onNavigate);
+        renderDeadlineList(tasksPanel, data.deadlines, onNavigate, data.tagColorsById, data.tagColorsByName);
       }),
       loadPanel(loadProgress, [{}], {}, (data, error) => {
         latestPanel.replaceChildren(latestPanel.querySelector('.home-panel__heading'));
@@ -284,34 +373,22 @@ export function renderHomePage({
         summary.append(
           element('span', 'home-latest-result__title', latest.quiz_title || 'แบบทดสอบ'),
           element('strong', 'home-latest-result__score', Number.isFinite(score) && Number.isFinite(total) ? `${score} / ${total}` : 'ไม่ระบุคะแนน'),
-          element('time', 'home-latest-result__date', formatDateTime(latest.submitted_at)),
         );
-        summary.querySelector('time').dateTime = latest.submitted_at || '';
         const latestScore = summary.querySelector('strong');
         latestScore.dataset.role = 'home-latest-score';
-        latestPanel.append(practiceSummary, summary, createAction('ดูความก้าวหน้า', '/progress', onNavigate));
+        const latestDate = element('time', 'home-latest-result__date', formatDateTime(latest.submitted_at));
+        latestDate.dateTime = latest.submitted_at || '';
+        latestPanel.append(summary, practiceSummary, latestDate, createAction('ดูความก้าวหน้า', '/progress', onNavigate));
       }),
-      loadPanel(loadQuizzes, [{ limit: 3, offset: 0 }], [], (data, error) => {
-        recentPanel.replaceChildren(recentPanel.querySelector('.home-panel__heading'));
-        if (error) return sectionError(recentPanel, 'home-quizzes-error', error);
-        renderRecentList(recentPanel, data, {
-          pathFor: (item) => `/quizzes/${item.id}`,
-          titleFor: (item) => item.title,
-          emptyMessage: 'ยังไม่มีข้อสอบในคลัง',
-          navigate: onNavigate,
-        });
-        recentPanel.append(createAction('เปิดคลังข้อสอบ', '/quizzes', onNavigate));
+      loadPanel(loadQuizzes, [{ limit: 1, offset: 0 }], [], (data, error) => {
+        recentQuizzes = asArray(data);
+        recentQuizError = error;
+        updateRecentPanel();
       }),
-      loadPanel(loadDocuments, [{ limit: 3, offset: 0 }], [], (data, error) => {
-        documentsPanel.replaceChildren(documentsPanel.querySelector('.home-panel__heading'));
-        if (error) return sectionError(documentsPanel, 'home-documents-error', error);
-        renderRecentList(documentsPanel, data, {
-          pathFor: (item) => `/documents/${item.id}`,
-          titleFor: (item) => item.title || item.original_filename,
-          emptyMessage: 'ยังไม่มีเอกสารในคลัง',
-          navigate: onNavigate,
-        });
-        documentsPanel.append(createAction('เปิดคลังเอกสาร', '/documents', onNavigate));
+      loadPanel(loadDocuments, [{ limit: 1, offset: 0 }], [], (data, error) => {
+        recentDocuments = asArray(data);
+        recentDocumentError = error;
+        updateRecentPanel();
       }),
     ]);
     return page.ready;

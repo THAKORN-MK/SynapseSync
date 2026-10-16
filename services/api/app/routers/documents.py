@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy import and_, func, or_, select
@@ -23,17 +25,13 @@ from app.services.document_library import (
     InvalidDocumentError,
     extract_library_text,
 )
+from app.storage.providers import FileStorageProvider, StorageProviderError
 from app.storage.documents import (
     DocumentStorageError,
     EmptyUploadError,
     StagedDocument,
     UploadTooLargeError,
     discard_staged_document,
-    promote_document,
-    quarantine_document_file,
-    read_document,
-    remove_quarantined_document_file,
-    restore_quarantined_document_file,
     stage_document,
 )
 from app.tags.service import (
@@ -45,6 +43,13 @@ from app.tags.service import (
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 UPLOAD_CHUNK_BYTES = 64 * 1024
+logger = logging.getLogger(__name__)
+_DOCUMENT_CONTENT_TYPES = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "md": "text/markdown",
+    "txt": "text/plain",
+}
 
 
 def _escape_like(value: str) -> str:
@@ -176,6 +181,7 @@ def upload_document(
     staged: StagedDocument | None = None
     storage_key: str | None = None
     committed = False
+    storage: FileStorageProvider = request.app.state.storage_provider
     try:
         staged = stage_document(
             iter(lambda: file.file.read(UPLOAD_CHUNK_BYTES), b""),
@@ -190,7 +196,13 @@ def upload_document(
         if not display_title.isprintable():
             raise HTTPException(status_code=422, detail="ชื่อเอกสารไม่ถูกต้อง")
 
-        storage_key = promote_document(staged, request.app.state.document_storage_dir)
+        storage_key = storage.new_key(user.id)
+        storage.put(
+            "documents",
+            storage_key,
+            content,
+            _DOCUMENT_CONTENT_TYPES[extraction.file_type],
+        )
         document = Document(
             user_id=user.id,
             title=display_title,
@@ -206,7 +218,6 @@ def upload_document(
         session.add(document)
         session.commit()
         committed = True
-        session.refresh(document)
         return _summary(document)
     except UploadTooLargeError as error:
         session.rollback()
@@ -223,6 +234,9 @@ def upload_document(
     except DocumentLibraryError as error:
         session.rollback()
         raise HTTPException(status_code=415, detail="ไม่สามารถอ่านเอกสารนี้ได้") from error
+    except (StorageProviderError, OSError) as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail="ไม่สามารถจัดเก็บเอกสารได้ชั่วคราว") from error
     except HTTPException:
         session.rollback()
         raise
@@ -233,8 +247,11 @@ def upload_document(
         if staged is not None:
             discard_staged_document(staged)
         if storage_key is not None and not committed:
-            # Promotion precedes the database commit; remove the blob if commit failed.
-            (Path(request.app.state.document_storage_dir) / storage_key).unlink(missing_ok=True)
+            # The object is created before its metadata row; compensate on any failed upload.
+            try:
+                storage.delete("documents", storage_key)
+            except (StorageProviderError, OSError):
+                pass
         file.file.close()
 
 
@@ -258,14 +275,49 @@ def get_document_content(
     if document.file_type != "pdf":
         raise HTTPException(status_code=415, detail="เนื้อหาไฟล์นี้ไม่ได้อยู่ในรูปแบบ PDF")
     try:
-        content = read_document(document.storage_key, request.app.state.document_storage_dir)
+        storage: FileStorageProvider = request.app.state.storage_provider
+        content = storage.read("documents", document.storage_key)
     except (OSError, DocumentStorageError) as error:
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์เอกสารนี้") from error
+    except StorageProviderError as error:
+        raise HTTPException(status_code=503, detail="ไม่สามารถโหลดเอกสารได้ชั่วคราว") from error
     return Response(
         content=content,
         media_type="application/pdf",
         headers={
             "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: int,
+    request: Request,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    document = _get_owned_document(session, user.id, document_id)
+    if document.file_type != "pdf":
+        raise HTTPException(status_code=415, detail="ดาวน์โหลดได้เฉพาะเอกสาร PDF")
+    try:
+        storage: FileStorageProvider = request.app.state.storage_provider
+        content = storage.read("documents", document.storage_key)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์เอกสารนี้") from error
+    except StorageProviderError as error:
+        raise HTTPException(status_code=503, detail="ไม่สามารถดาวน์โหลดเอกสารได้ชั่วคราว") from error
+    except OSError as error:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์เอกสารนี้") from error
+
+    encoded_filename = quote(document.original_filename, safe="")
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="document.pdf"; filename*=UTF-8\'\'{encoded_filename}',
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",
         },
@@ -365,22 +417,16 @@ def delete_document(
 ) -> None:
     require_same_origin(request)
     document = _get_owned_document(session, user.id, document_id)
-    quarantined_path = quarantine_document_file(
-        document.storage_key,
-        request.app.state.document_storage_dir,
-        request.app.state.document_staging_dir,
-    )
+    storage_key = document.storage_key
     session.delete(document)
     try:
         session.commit()
     except SQLAlchemyError as error:
         session.rollback()
-        if quarantined_path is not None:
-            restore_quarantined_document_file(
-                document.storage_key,
-                request.app.state.document_storage_dir,
-                quarantined_path,
-            )
         raise HTTPException(status_code=500, detail="ไม่สามารถลบเอกสารได้") from error
-    if quarantined_path is not None:
-        remove_quarantined_document_file(quarantined_path)
+    storage: FileStorageProvider = request.app.state.storage_provider
+    try:
+        storage.delete("documents", storage_key)
+    except (StorageProviderError, OSError):
+        # The owner-scoped metadata is gone, so a leftover private object is unreachable.
+        logger.warning("Document metadata was deleted but private object cleanup failed")

@@ -6,9 +6,7 @@ from io import BytesIO
 from pathlib import PurePosixPath
 from threading import Lock
 from typing import Any, Literal
-from zipfile import BadZipFile, ZipFile
 
-from app.services.extractors.docx import extract_docx
 from app.services.extractors.markdown import extract_markdown
 from app.services.extractors.plain_text import decode_text
 from app.storage.documents import (
@@ -19,8 +17,6 @@ from app.storage.documents import (
 
 MAX_READER_TEXT_CHARS = 2_000_000
 MAX_SEARCH_TEXT_CHARS = 500_000
-MAX_DOCX_DOCUMENT_XML_BYTES = 10_000_000
-MAX_DOCX_PARTS = 2_000
 MAX_PDF_PAGES = 2_000
 MAX_PDF_STREAM_OUTPUT_BYTES = 8_000_000
 MAX_PDF_TOTAL_CONTENT_BYTES = 24_000_000
@@ -117,7 +113,7 @@ class _BoundedPdfOperations(list[tuple[object, bytes]]):
 
 @dataclass(frozen=True)
 class LibraryExtraction:
-    file_type: Literal["pdf", "docx", "md", "txt"]
+    file_type: Literal["pdf", "md", "txt"]
     extracted_text: str
     extracted_text_truncated: bool
     search_text: str
@@ -128,21 +124,6 @@ class LibraryExtraction:
 def _normalize_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(line.rstrip() for line in normalized.split("\n")).strip()
-
-
-def _validate_docx_archive(content: bytes) -> None:
-    try:
-        with ZipFile(BytesIO(content)) as archive:
-            entries = archive.infolist()
-            if len(entries) > MAX_DOCX_PARTS:
-                raise InvalidDocumentError("DOCX archive contains too many parts")
-            document_xml = next((item for item in entries if item.filename == "word/document.xml"), None)
-            if document_xml is None:
-                raise InvalidDocumentError("Invalid DOCX file")
-            if document_xml.file_size > MAX_DOCX_DOCUMENT_XML_BYTES:
-                raise InvalidDocumentError("DOCX document content is too large to safely extract")
-    except BadZipFile as exc:
-        raise InvalidDocumentError("Invalid DOCX file") from exc
 
 
 def _extract_pdf(content: bytes) -> tuple[str, bool]:
@@ -387,23 +368,17 @@ def extract_library_text(filename: str, content: bytes) -> LibraryExtraction:
 
     basename = PurePosixPath(str(filename).replace("\\", "/")).name
     extension = PurePosixPath(basename).suffix.lower()
-    if extension not in {".pdf", ".docx", ".md", ".txt"}:
-        raise UnsupportedDocumentError("Supported formats are PDF, DOCX, Markdown, and TXT")
+    if extension not in {".pdf", ".md", ".txt"}:
+        raise UnsupportedDocumentError("Supported formats are PDF, Markdown, and TXT")
 
     pdf_text_truncated = False
     try:
         if extension == ".md":
             text, _locators = extract_markdown(content)
-            file_type: Literal["pdf", "docx", "md", "txt"] = "md"
+            file_type: Literal["pdf", "md", "txt"] = "md"
         elif extension == ".txt":
             text = decode_text(content)
             file_type = "txt"
-        elif extension == ".docx":
-            if not content.startswith(b"PK\x03\x04"):
-                raise InvalidDocumentError("Invalid DOCX file")
-            _validate_docx_archive(content)
-            text = extract_docx(content)
-            file_type = "docx"
         else:
             if not content.lstrip().startswith(b"%PDF-"):
                 raise InvalidDocumentError("Invalid PDF file")

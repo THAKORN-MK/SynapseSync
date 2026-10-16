@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import { renderNavbar } from '../src/components/Navbar.js';
 import { renderHomePage } from '../src/pages/HomePage.js';
@@ -119,6 +120,9 @@ describe('Home, shared navigation, and account pages', () => {
 
     const signedIn = renderNavbar({ display_name: 'Learner' }, { navigate, onLogout });
     expect(signedIn.textContent).toContain('Learner');
+    const brandLogo = signedIn.querySelector('.brand-mark');
+    expect(brandLogo.tagName).toBe('IMG');
+    expect(brandLogo.getAttribute('src')).toBe('/brand-logo.png');
     expect(signedIn.querySelector('[href="/profile"]')).not.toBeNull();
     expect(signedIn.querySelector('[href="/quizzes"]')?.textContent).toBe('คลังข้อสอบ');
     signedIn.querySelector('[data-action="logout"]').click();
@@ -210,10 +214,71 @@ describe('Home, shared navigation, and account pages', () => {
     expect(imageNavbar.querySelector('.nav-account__initial').hidden).toBe(false);
   });
 
-  it('lists only incomplete deadlines due in the next 24 hours and opens their destination', async () => {
+  it('keeps the overlapping navbar portrait vertically centered with a scale-only hover', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+    expect(styles).toMatch(/\.nav-account__portrait\s*\{[^}]*transform:\s*none/s);
+    expect(styles).toMatch(/\.nav-account__toggle:hover \.nav-account__portrait\s*\{[^}]*transform:\s*scale\(1\.05\)/s);
+    expect(styles).not.toMatch(/\.nav-account__portrait\s*\{[^}]*translateY\(1rem\)/s);
+  });
+
+  it('keeps the top navbar sticky outside its short header wrapper', () => {
+    const styles = document.createElement('style');
+    styles.textContent = readFileSync('src/styles.css', 'utf8');
+    document.head.append(styles);
+
+    try {
+      const navigation = renderNavbar(null);
+      const header = navigation.querySelector('.site-header');
+      document.body.append(navigation);
+
+      expect(getComputedStyle(navigation).position).toBe('sticky');
+      expect(getComputedStyle(navigation).top).toBe('0px');
+      expect(Number(getComputedStyle(navigation).zIndex)).toBeGreaterThan(0);
+      expect(getComputedStyle(header).position).toBe('static');
+    } finally {
+      styles.remove();
+    }
+  });
+
+  it('uses a compact top navbar, larger brand mark, smaller profile control, and stateful red notifications', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+
+    expect(styles).not.toMatch(/\.app-navigation\s*\{[^}]*\bwidth:/s);
+    expect(styles).toMatch(/\.navbar\s*\{[^}]*width:\s*min\(calc\(100%\s*-\s*clamp\(1\.25rem,\s*5vw,\s*4rem\)\),\s*1440px\);[^}]*min-height:\s*56px/s);
+    expect(styles).toMatch(/\.site-header\s*\{[^}]*border-bottom:\s*1px solid var\(--line\)/s);
+    expect(styles).not.toMatch(/\.site-header\s*\{[^}]*border-radius:/s);
+    expect(styles).toMatch(/\.brand-mark\s*\{[^}]*width:\s*3\.4rem;[^}]*height:\s*3\.4rem;[^}]*object-fit:\s*cover/s);
+    expect(styles).toMatch(/@media\s*\(max-width:\s*640px\)[\s\S]*?\.brand-mark\s*\{[^}]*width:\s*2\.8rem;[^}]*height:\s*2\.8rem/s);
+    expect(styles).toMatch(/\.nav-account__toggle\s*\{[^}]*min-height:\s*2\.65rem/s);
+    expect(styles).toMatch(/\.nav-account__portrait\s*\{[^}]*width:\s*2\.45rem;[^}]*height:\s*2\.45rem/s);
+    expect(styles).toMatch(/\.nav-notifications__toggle\.button-quiet\s*\{[^}]*background:\s*var\(--error-soft\)/s);
+    expect(styles).toMatch(/\.nav-notifications__toggle\.button-quiet\[data-has-notifications="true"\]\s*\{[^}]*color:\s*#fff;[^}]*background:\s*#dc2626/s);
+    expect(styles).toMatch(/\.nav-notifications__count\s*\{[^}]*background:\s*#b91c1c/s);
+    expect(styles).toMatch(/@media\s*\(max-width:\s*640px\)[\s\S]*?\.nav-notifications__toggle\.button-quiet\s*\{[^}]*width:\s*2\.35rem/s);
+  });
+
+  it('styles native select popups with the active theme and accent selection', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+
+    expect(styles).toMatch(/\.themed-select,[\s\S]*?color-scheme:\s*inherit/s);
+    expect(styles).toMatch(/select option,\s*select optgroup\s*\{[^}]*color:\s*var\(--ink\)[^}]*background-color:\s*var\(--surface\)/s);
+    expect(styles).toMatch(/select option:checked\s*\{[^}]*color:\s*var\(--accent-ink\)[^}]*background-color:\s*var\(--accent\)/s);
+  });
+
+  it('uses a themeable picker for single-selects in supporting browsers', () => {
+    const styles = readFileSync('src/styles.css', 'utf8');
+
+    expect(styles).toMatch(/@supports\s*\(appearance:\s*base-select\)[\s\S]*?select:not\(\[multiple\]\)\s*\{[^}]*appearance:\s*base-select/s);
+    expect(styles).toMatch(/select:not\(\[multiple\]\)::picker\(select\)\s*\{[^}]*appearance:\s*base-select;[^}]*background(?:-color)?:\s*var\(--surface-card\)/s);
+    expect(styles).toMatch(/select:not\(\[multiple\]\) option:checked\s*\{[^}]*background(?:-color)?:\s*var\(--accent\)/s);
+  });
+
+  it('lists incomplete deadlines due within five days and opens their destination', async () => {
     const loadDeadlines = vi.fn().mockResolvedValueOnce([
       { id: 11, title: 'ส่งรายงาน', subject: 'คณิตศาสตร์', due_at: '2026-10-12T13:00:00Z', is_completed: false },
-      { id: 12, title: 'งานสัปดาห์หน้า', subject: 'ภาษาไทย', due_at: '2026-10-14T13:00:00Z', is_completed: false },
+      { id: 12, title: 'ครบห้าวันพอดี', subject: 'ภาษาไทย', due_at: '2026-10-17T12:00:00Z', is_completed: false },
+      { id: 18, title: 'ก่อนครบห้าวัน', subject: 'เคมี', due_at: '2026-10-15T12:00:00Z', is_completed: false },
+      { id: 17, title: 'เกินห้าวัน', subject: 'วิทยาศาสตร์', due_at: '2026-10-17T12:00:01Z', is_completed: false },
       { id: 13, title: 'ส่งแล้ว', subject: 'ฟิสิกส์', due_at: '2026-10-12T13:30:00Z', is_completed: true },
       { id: 14, title: 'เลยกำหนด', subject: 'เคมี', due_at: '2026-10-12T11:00:00Z', is_completed: false },
     ]).mockResolvedValueOnce([
@@ -231,7 +296,8 @@ describe('Home, shared navigation, and account pages', () => {
 
     const toggle = navbar.querySelector('[data-action="notifications-toggle"]');
     expect(toggle).not.toBeNull();
-    expect(toggle.textContent).toContain('1');
+    expect(toggle.textContent).toContain('3');
+    expect(toggle.dataset.hasNotifications).toBe('true');
     toggle.click();
     const panel = navbar.querySelector('[data-role="notifications-panel"]');
     expect(panel.hidden).toBe(false);
@@ -240,13 +306,45 @@ describe('Home, shared navigation, and account pages', () => {
     expect(toggle.textContent).toContain('2');
     expect(panel.textContent).toContain('งานที่เพิ่งเพิ่ม');
     expect(panel.textContent).toContain('งานที่เพิ่มอีกชิ้น');
+    expect(panel.textContent).toContain('ภายใน 5 วัน');
     expect(panel.textContent).not.toContain('ส่งรายงาน');
-    expect(panel.textContent).not.toContain('งานสัปดาห์หน้า');
+    expect(panel.textContent).not.toContain('ครบห้าวันพอดี');
+    expect(panel.textContent).not.toContain('เกินห้าวัน');
     expect(panel.textContent).not.toContain('ส่งแล้ว');
     expect(panel.textContent).not.toContain('เลยกำหนด');
 
     panel.querySelector('[data-notification-id="15"]').click();
     expect(navigate).toHaveBeenCalledWith('/deadlines');
+  });
+
+  it('turns the notification red and reveals a newly assigned task immediately', async () => {
+    const assignedTask = { id: 27, title: 'งานที่เพิ่ง assign', subject: 'ชีววิทยา', due_at: '2026-10-14T12:00:00Z', is_completed: false };
+    const loadDeadlines = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([assignedTask]);
+    const navbar = renderNavbar({ id: 4, display_name: 'Learner' }, {
+      loadDeadlines,
+      now: () => new Date('2026-10-12T12:00:00Z'),
+    });
+    document.body.append(navbar);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const toggle = navbar.querySelector('[data-action="notifications-toggle"]');
+    expect(toggle.dataset.hasNotifications).toBe('false');
+    expect(toggle.querySelector('[data-role="notification-count"]').hidden).toBe(true);
+
+    navbar.refreshNotifications({ assignedTask });
+    const panel = navbar.querySelector('[data-role="notifications-panel"]');
+    expect(panel.hidden).toBe(false);
+    expect(toggle.dataset.hasNotifications).toBe('true');
+    expect(toggle.querySelector('[data-role="notification-count"]').textContent).toBe('1');
+    expect(panel.querySelector('[data-notification-id="27"]')?.textContent).toContain('งานที่เพิ่ง assign');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(toggle.dataset.hasNotifications).toBe('true');
+    expect(toggle.querySelector('[data-role="notification-count"]').textContent).toBe('1');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(panel.hidden).toBe(false);
+    expect(panel.querySelector('[data-notification-id="27"]')?.textContent).toContain('งานที่เพิ่ง assign');
+    expect(panel.querySelector('[data-notification-id="27"]')?.dataset.newlyAssigned).toBe('true');
   });
 
   it('submits labeled login fields without discarding the entered values', async () => {

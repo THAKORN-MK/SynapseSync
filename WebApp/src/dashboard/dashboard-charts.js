@@ -48,43 +48,136 @@ function describeSvg(svg, description) {
   if (svgDescription) svgDescription.textContent = description;
 }
 
+function activityPeriodLabel(items) {
+  const labels = items.map((item) => String(item?.label || ''));
+  const weeklyLabels = labels.map((label) => label.match(/^(\d{4})-W(\d{2})$/));
+  if (labels.length && weeklyLabels.every(Boolean)) {
+    const first = weeklyLabels[0];
+    const last = weeklyLabels.at(-1);
+    const firstYear = Number(first[1]) + 543;
+    const lastYear = Number(last[1]) + 543;
+    if (firstYear === lastYear) {
+      return `สัปดาห์ ${Number(first[2])}–${Number(last[2])} · ${firstYear}`;
+    }
+    return `สัปดาห์ ${Number(first[2])} · ${firstYear} – สัปดาห์ ${Number(last[2])} · ${lastYear}`;
+  }
+
+  const dates = labels.map((label) => {
+    const match = label.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+  });
+  if (!dates.length || dates.some((date) => !date)) return 'ช่วงเวลาที่เลือก';
+
+  const first = dates[0];
+  const last = dates.at(-1);
+  const monthYear = new Intl.DateTimeFormat('th-TH', { month: 'short', year: 'numeric' });
+  const fullDate = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+  if (first.getFullYear() === last.getFullYear() && first.getMonth() === last.getMonth()) {
+    return `${first.getDate()}–${last.getDate()} ${monthYear.format(last)}`;
+  }
+  return `${fullDate.format(first)} – ${fullDate.format(last)}`;
+}
+
 function activityChart(data = []) {
   const section = chart('จำนวนทำข้อสอบ', 'จำนวนครั้งที่ส่งคำตอบในแต่ละวันหรือสัปดาห์', 'quiz-activity');
   const items = Array.isArray(data) ? data : [];
-  const maxCount = Math.max(0, ...items.map((item) => Number(item?.count) || 0));
-  const svg = addSvg(section, 'quiz-activity', 'จำนวนครั้งที่ทำข้อสอบตามช่วงเวลา', 216);
+  const counts = items.map((item) => Math.max(0, Number(item?.count) || 0));
+  const maxCount = Math.max(0, ...counts);
+  const totalAttempts = counts.reduce((sum, count) => sum + count, 0);
+  const activeDays = counts.filter((count) => count > 0).length;
+  const weekly = items.some((item) => /-W\d{2}$/.test(String(item?.label || '')));
+  const periodUnit = weekly ? 'สัปดาห์' : 'วัน';
+
+  const title = section.querySelector('.dashboard-chart__title');
+  const description = section.querySelector('.dashboard-chart__description');
+  const header = node('header', 'dashboard-chart__activity-header');
+  const copy = node('div', 'dashboard-chart__activity-copy');
+  copy.append(title, description);
+  header.append(copy);
+  section.prepend(header);
+
+  const main = node('div', 'dashboard-chart__activity-main');
+  const kpi = node('div', 'dashboard-chart__activity-kpi');
+  const total = node('strong', 'dashboard-chart__activity-total', String(totalAttempts));
+  total.dataset.role = 'quiz-activity-total';
+  kpi.append(total, node('span', '', 'ครั้งทั้งหมด'));
+  const period = node('small', 'dashboard-chart__activity-period', activityPeriodLabel(items));
+  period.dataset.role = 'quiz-activity-period';
+  kpi.append(period);
+  main.append(kpi);
+
+  const plot = node('div', 'dashboard-chart__activity-plot');
+  const svg = addSvg(plot, 'quiz-activity', 'จำนวนครั้งที่ทำข้อสอบตามช่วงเวลา', 216);
   const baseline = 172;
   svg.append(svgNode('line', { x1: 24, y1: baseline, x2: 344, y2: baseline, class: 'dashboard-chart__axis' }));
+  main.append(plot);
+  section.append(main);
 
   if (!items.length || maxCount === 0) {
     describeSvg(svg, 'ยังไม่มีข้อมูลการทำข้อสอบในช่วงนี้');
-    addEmpty(section, 'ยังไม่มีข้อมูลการทำข้อสอบในช่วงนี้');
-    return section;
-  }
-  describeSvg(svg, 'กราฟแท่งแสดงจำนวนครั้งทำข้อสอบในแต่ละช่วงเวลา โดยมีค่ารายช่วงในรายการถัดไป');
+    addEmpty(plot, 'ยังไม่มีข้อมูลการทำข้อสอบในช่วงนี้');
+  } else {
+    describeSvg(svg, 'กราฟแท่งแสดงจำนวนครั้งทำข้อสอบในแต่ละช่วงเวลา โดยมีค่าบนแท่งและรายการอ่านหน้าจอเพิ่มเติม');
 
-  const slot = 320 / items.length;
-  const barWidth = Math.min(30, slot * 0.58);
-  const values = node('ul', 'dashboard-chart__data-list dashboard-chart__data-list--activity');
-  items.forEach((item, index) => {
-    const count = Math.max(0, Number(item?.count) || 0);
-    const height = count === 0 ? 2 : Math.max(5, (count / maxCount) * 116);
-    const x = 24 + (index * slot) + ((slot - barWidth) / 2);
-    const bar = svgNode('rect', {
-      x,
-      y: baseline - height,
-      width: barWidth,
-      height,
-      rx: 6,
-      class: 'dashboard-chart__bar',
+    const slot = 320 / items.length;
+    const barWidth = Math.min(30, slot * 0.58);
+    const values = node('ul', 'dashboard-chart__data-list dashboard-chart__data-list--activity visually-hidden');
+    values.setAttribute('aria-label', 'จำนวนครั้งทำข้อสอบในแต่ละวัน');
+    items.forEach((item, index) => {
+      const count = counts[index];
+      const height = Math.max(2, (count / maxCount) * 116);
+      const x = 24 + (index * slot) + ((slot - barWidth) / 2);
+      const bar = svgNode('rect', {
+        x,
+        y: baseline - height,
+        width: barWidth,
+        height,
+        rx: 6,
+        class: 'dashboard-chart__bar',
+      });
+      bar.setAttribute('data-count', String(count));
+      svg.append(bar);
+
+      if (count > 0) {
+        const value = svgNode('text', {
+          x: x + barWidth / 2,
+          y: Math.max(14, baseline - height - 8),
+          class: 'dashboard-chart__activity-value',
+          'text-anchor': 'middle',
+        });
+        value.textContent = String(count);
+        value.dataset.role = 'quiz-activity-bar-value';
+        svg.append(value);
+      }
+
+      const label = String(item?.label || '');
+      const dateMatch = label.match(/^\d{4}-\d{2}-(\d{2})$/);
+      const weekMatch = label.match(/-W(\d{2})$/);
+      const axisLabel = svgNode('text', {
+        x: x + barWidth / 2,
+        y: baseline + 18,
+        class: 'dashboard-chart__axis-label',
+        'text-anchor': 'middle',
+      });
+      axisLabel.textContent = dateMatch ? String(Number(dateMatch[1])) : (weekMatch ? `W${weekMatch[1]}` : label.slice(-3));
+      svg.append(axisLabel);
+      const listItem = node('li', '', `${label}: ${count} ครั้ง`);
+      listItem.dataset.role = 'chart-data-value';
+      values.append(listItem);
     });
-    bar.setAttribute('data-count', String(count));
-    svg.append(bar);
-    const label = node('li', '', `${item.label}: ${count} ครั้ง`);
-    label.dataset.role = 'chart-data-value';
-    values.append(label);
-  });
-  section.append(values);
+    section.append(values);
+  }
+
+  const summary = node('p', 'dashboard-chart__summary dashboard-chart__activity-footer');
+  const legend = node('span', 'dashboard-chart__activity-legend');
+  legend.append(node('span', 'dashboard-chart__summary-dot'), node('span', '', 'จำนวนครั้งที่ทำข้อสอบ'));
+  const activeDaySummary = node('span', '', `ทำข้อสอบ ${activeDays} จาก ${items.length} ${periodUnit}`);
+  activeDaySummary.dataset.role = 'quiz-activity-active-days';
+  summary.append(
+    legend,
+    activeDaySummary,
+  );
+  section.append(summary);
   return section;
 }
 
@@ -97,9 +190,10 @@ function taskChart(data = {}) {
   ].map(([key, label, color]) => ({ label, color, count: Math.max(0, Number(data?.[key]) || 0) }));
   const total = statuses.reduce((sum, item) => sum + item.count, 0);
   const svg = addSvg(section, 'task-status', 'สัดส่วนสถานะงาน', 200);
+  const centerX = 180;
   const circumference = 2 * Math.PI * 58;
   const circleBase = svgNode('circle', {
-    cx: 112, cy: 100, r: 58,
+    cx: centerX, cy: 100, r: 58,
     class: 'dashboard-chart__donut-track',
   });
   svg.append(circleBase);
@@ -110,20 +204,20 @@ function taskChart(data = {}) {
       if (!item.count) continue;
       const segment = circumference * item.count / total;
       const circle = svgNode('circle', {
-        cx: 112,
+        cx: centerX,
         cy: 100,
         r: 58,
         class: `dashboard-chart__donut-segment dashboard-chart__donut-segment--${item.color}`,
         'stroke-dasharray': `${segment} ${circumference - segment}`,
         'stroke-dashoffset': -offset,
-        transform: 'rotate(-90 112 100)',
+        transform: `rotate(-90 ${centerX} 100)`,
       });
       svg.append(circle);
       offset += segment;
     }
-    const totalLabel = svgNode('text', { x: 112, y: 96, class: 'dashboard-chart__donut-total' });
+    const totalLabel = svgNode('text', { x: centerX, y: 96, class: 'dashboard-chart__donut-total' });
     totalLabel.textContent = String(total);
-    const caption = svgNode('text', { x: 112, y: 118, class: 'dashboard-chart__donut-caption' });
+    const caption = svgNode('text', { x: centerX, y: 118, class: 'dashboard-chart__donut-caption' });
     caption.textContent = 'งานทั้งหมด';
     svg.append(totalLabel, caption);
 

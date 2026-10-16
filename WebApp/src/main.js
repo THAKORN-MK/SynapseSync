@@ -53,7 +53,7 @@ import { renderDeadlinesPage } from './pages/DeadlinesPage.js';
 import { renderTutorPage } from './pages/TutorPage.js';
 import { renderProgressPage } from './pages/ProgressPage.js';
 import { renderRegisterPage } from './pages/RegisterPage.js';
-import { markRoutePage, resolveRoute } from './router.js';
+import { applyTutorAppMode, markRoutePage, resolveRoute } from './router.js';
 import { initializeTheme, setTheme } from './theme/theme-manager.js';
 
 const app = document.querySelector('#app');
@@ -91,6 +91,7 @@ function render() {
   }
 
   const route = resolveRoute(window.location.pathname, user, window.location.search);
+  applyTutorAppMode(app, route.page === 'tutor');
   const routeUrl = route.returnTo
     ? `${route.path}?next=${encodeURIComponent(route.returnTo)}`
     : route.path;
@@ -204,6 +205,7 @@ function render() {
       createDeadline,
       updateDeadline,
       deleteDeadline,
+      onDeadlineCreated: (task) => navbar.refreshNotifications({ assignedTask: task }),
     });
   } else if (route.page === 'tutor') {
     page = renderTutorPage({
@@ -229,6 +231,7 @@ function render() {
       onNavigate: navigate,
       loadOverview: getDashboardOverview,
       loadDeadlines: listDeadlines,
+      loadTags: listTags,
       loadProgress: getProgress,
       loadQuizzes: listQuizzes,
       loadDocuments: listDocuments,

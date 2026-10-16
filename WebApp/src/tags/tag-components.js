@@ -5,10 +5,12 @@ import {
 } from './tag-colors.js';
 
 let paletteInstance = 0;
+let tagCreationDialogInstance = 0;
 
-function createElement(tagName, className) {
+function createElement(tagName, className, textContent) {
   const element = document.createElement(tagName);
   if (className) element.className = className;
+  if (textContent !== undefined) element.textContent = textContent;
   return element;
 }
 
@@ -49,10 +51,10 @@ export function renderTagChips(tags = []) {
 
 export function renderTagFilter(catalog, selectedTagId, onChange = () => {}) {
   const select = createElement('select', 'tag-filter themed-select');
-  select.setAttribute('aria-label', 'Filter quizzes by tag');
+  select.setAttribute('aria-label', 'กรองตามวิชาและแท็ก');
   const allOption = createElement('option');
   allOption.value = '';
-  allOption.textContent = 'All subjects and tags';
+  allOption.textContent = 'ทุกวิชาและแท็ก';
   select.append(allOption);
 
   for (const tag of tagOptions(catalog)) {
@@ -101,6 +103,138 @@ export function renderTagColorPalette({ selectedColor = DEFAULT_TAG_COLOR, onCha
   return fieldset;
 }
 
+function openTagCreationDialog({ onCreate, returnFocus }) {
+  const instance = ++tagCreationDialogInstance;
+  const layer = createElement('div', 'modal-layer tag-create-layer');
+  const dialog = createElement('section', 'tag-create-dialog glass-panel');
+  const title = createElement('h2', '', 'สร้างแท็กใหม่');
+  title.id = `tag-create-dialog-title-${instance}`;
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', title.id);
+  dialog.tabIndex = -1;
+
+  const header = createElement('header', 'tag-create-dialog__header');
+  const closeButton = createElement('button', 'icon-button', '×');
+  closeButton.type = 'button';
+  closeButton.setAttribute('aria-label', 'ปิดหน้าต่างสร้างแท็ก');
+  header.append(title, closeButton);
+
+  const form = createElement('form', 'tag-create-dialog__form');
+  const nameLabel = createElement('label', 'tag-create-dialog__label', 'ชื่อแท็ก');
+  const nameInput = createElement('input', 'tag-create-dialog__name');
+  nameInput.type = 'text';
+  nameInput.maxLength = 40;
+  nameInput.setAttribute('aria-label', 'New topic tag name');
+  nameInput.autocomplete = 'off';
+  nameLabel.append(nameInput);
+
+  let selectedColor = DEFAULT_TAG_COLOR;
+  const palette = renderTagColorPalette({
+    selectedColor,
+    onChange: (color) => {
+      selectedColor = color;
+    },
+  });
+
+  const status = createElement('p', 'tag-create-dialog__status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  const actions = createElement('footer', 'tag-create-dialog__actions');
+  const cancelButton = createElement('button', 'button button-secondary', 'ยกเลิก');
+  cancelButton.type = 'button';
+  cancelButton.dataset.action = 'cancel-tag-create';
+  const createButton = createElement('button', 'button button-primary', 'เพิ่มแท็ก');
+  createButton.type = 'submit';
+  createButton.dataset.action = 'create-tag';
+  actions.append(cancelButton, createButton);
+  form.append(nameLabel, palette, status, actions);
+  dialog.append(header, form);
+  layer.append(dialog);
+
+  let busy = false;
+  let closed = false;
+  const close = (restoreFocus = true) => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeydown);
+    layer.remove();
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === 'Escape' && !busy) {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+      .sort((first, second) => {
+        if (first === second) return 0;
+        return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!dialog.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  document.addEventListener('keydown', onKeydown);
+  layer.addEventListener('click', (event) => {
+    if (event.target === layer && !busy) close();
+  });
+  closeButton.addEventListener('click', () => close());
+  cancelButton.addEventListener('click', () => close());
+  nameInput.addEventListener('input', () => {
+    nameInput.removeAttribute('aria-invalid');
+    status.textContent = '';
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    const name = nameInput.value.trim();
+    if (!name) {
+      nameInput.setAttribute('aria-invalid', 'true');
+      status.textContent = 'กรุณากรอกชื่อแท็ก';
+      nameInput.focus();
+      return;
+    }
+
+    busy = true;
+    nameInput.removeAttribute('aria-invalid');
+    status.textContent = 'กำลังสร้างแท็ก…';
+    createButton.disabled = true;
+    cancelButton.disabled = true;
+    closeButton.disabled = true;
+    try {
+      await onCreate({ name, color: selectedColor });
+      nameInput.value = '';
+      close();
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : 'สร้างแท็กไม่สำเร็จ กรุณาลองอีกครั้ง';
+    } finally {
+      busy = false;
+      if (!closed) {
+        createButton.disabled = false;
+        cancelButton.disabled = false;
+        closeButton.disabled = false;
+      }
+    }
+  });
+
+  document.body.append(layer);
+  nameInput.focus();
+}
+
 export function renderTagPicker({
   catalog,
   selectedTagIds = [],
@@ -146,58 +280,19 @@ export function renderTagPicker({
     }
   };
 
-  const createFieldset = createElement('fieldset', 'tag-picker-create');
-  const createLegend = createElement('legend');
-  createLegend.textContent = 'Create tag';
-  createFieldset.append(createLegend);
   picker.setCatalog = (nextCatalog) => {
     catalog = nextCatalog && Array.isArray(nextCatalog.tags) ? nextCatalog : { tags: [] };
     renderGroups();
   };
 
-  const nameInput = createElement('input');
-  nameInput.type = 'text';
-  nameInput.maxLength = 40;
-  nameInput.setAttribute('aria-label', 'New topic tag name');
-  nameInput.autocomplete = 'off';
-
-  let selectedColor = DEFAULT_TAG_COLOR;
-  const palette = renderTagColorPalette({
-    selectedColor,
-    onChange: (color) => {
-      selectedColor = color;
-    },
-  });
-
-  const createButton = createElement('button', 'button button-primary');
+  const createButton = createElement('button', 'button button-primary tag-picker-create', 'สร้างแท็ก');
   createButton.type = 'button';
-  createButton.dataset.action = 'create-tag';
-  createButton.textContent = 'Add tag';
-  const createStatus = createElement('p', 'tag-picker-create-status');
-  createStatus.setAttribute('aria-live', 'polite');
+  createButton.dataset.action = 'open-tag-create';
+  createButton.addEventListener('click', () => openTagCreationDialog({
+    onCreate,
+    returnFocus: createButton,
+  }));
 
-  createButton.addEventListener('click', async () => {
-    const name = nameInput.value.trim();
-    if (!name || createButton.disabled) return;
-
-    createButton.disabled = true;
-    createStatus.textContent = '';
-    try {
-      await onCreate({ name, color: selectedColor });
-      nameInput.value = '';
-    } catch (error) {
-      createStatus.textContent = error instanceof Error ? error.message : 'Unable to create tag.';
-    } finally {
-      createButton.disabled = false;
-    }
-  });
-
-  createFieldset.append(
-    nameInput,
-    palette,
-    createButton,
-    createStatus,
-  );
-  picker.append(search, groups, createFieldset);
+  picker.append(search, groups, createButton);
   return picker;
 }

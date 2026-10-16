@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import warnings
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -24,7 +25,14 @@ class InvalidAvatarError(ValueError):
     """The upload is not a supported, valid raster image."""
 
 
-def validate_and_store_avatar(upload: UploadFile, storage_dir: str | Path) -> str:
+@dataclass(frozen=True)
+class ValidatedAvatar:
+    content: bytes
+    content_type: str
+    suffix: str
+
+
+def validate_avatar_upload(upload: UploadFile) -> ValidatedAvatar:
     payload = upload.file.read(MAX_AVATAR_BYTES + 1)
     if len(payload) > MAX_AVATAR_BYTES:
         raise AvatarTooLargeError("ภาพโปรไฟล์ต้องมีขนาดไม่เกิน 5 MB")
@@ -51,8 +59,15 @@ def validate_and_store_avatar(upload: UploadFile, storage_dir: str | Path) -> st
     if declared_mime != expected_mime:
         raise InvalidAvatarError("ชนิดไฟล์ไม่ตรงกับเนื้อหาภาพ")
 
+
+    return ValidatedAvatar(content=payload, content_type=expected_mime, suffix=extension)
+
+
+def validate_and_store_avatar(upload: UploadFile, storage_dir: str | Path) -> str:
+    """Retain the original local helper for callers that still need local paths."""
+    avatar = validate_avatar_upload(upload)
     directory = Path(storage_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    storage_key = f"{secrets.token_hex(24)}{extension}"
-    (directory / storage_key).write_bytes(payload)
+    storage_key = f"{secrets.token_hex(24)}{avatar.suffix}"
+    (directory / storage_key).write_bytes(avatar.content)
     return storage_key

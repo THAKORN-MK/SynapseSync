@@ -1,6 +1,6 @@
 import { getTheme, getThemes } from '../theme/theme-config.js';
 
-const NOTIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
+const NOTIFICATION_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
 
 const NAV_ITEMS = [
   { id: 'home', label: 'หน้าหลัก', path: '/', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11h13V9M9 20v-6h6v6' },
@@ -94,6 +94,7 @@ function createNotifications(navigate, loadDeadlines, now) {
   toggle.setAttribute('aria-label', 'แจ้งเตือนงานใกล้ครบกำหนด');
   toggle.setAttribute('aria-expanded', 'false');
   toggle.setAttribute('aria-controls', 'nav-notifications-panel');
+  toggle.dataset.hasNotifications = 'false';
   const bellPath = 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4';
   appendIcon(toggle, bellPath, 'nav-notifications__icon');
   const count = document.createElement('span');
@@ -111,6 +112,9 @@ function createNotifications(navigate, loadDeadlines, now) {
   const heading = document.createElement('h2');
   heading.className = 'nav-notifications__heading';
   heading.textContent = 'งานใกล้ครบกำหนด';
+  const note = document.createElement('p');
+  note.className = 'nav-notifications__note';
+  note.textContent = 'แสดงเฉพาะงานที่ครบกำหนดภายใน 5 วัน';
   const state = document.createElement('p');
   state.className = 'nav-notifications__state';
   state.dataset.role = 'notifications-state';
@@ -120,52 +124,84 @@ function createNotifications(navigate, loadDeadlines, now) {
   const list = document.createElement('div');
   list.className = 'nav-notifications__list';
   const viewAll = createLink('ดูงานทั้งหมด', '/deadlines', navigate, 'nav-notifications__all');
-  panel.append(heading, state, list, viewAll);
+  panel.append(heading, note, state, list, viewAll);
   let refreshVersion = 0;
-  const refresh = () => {
+  let currentNotifications = [];
+  const isUpcoming = (task, currentTime) => {
+    const dueAt = new Date(task?.due_at).getTime();
+    return !task?.is_completed
+      && Number.isFinite(dueAt)
+      && dueAt >= currentTime
+      && dueAt <= currentTime + NOTIFICATION_WINDOW_MS;
+  };
+  const renderNotifications = (upcoming, assignedTaskId = null) => {
+    currentNotifications = upcoming;
+    count.textContent = String(upcoming.length);
+    count.hidden = upcoming.length === 0;
+    toggle.dataset.hasNotifications = String(upcoming.length > 0);
+    if (upcoming.length === 0) {
+      state.textContent = 'ไม่มีงานที่ครบกำหนดภายใน 5 วัน';
+      list.replaceChildren();
+      return;
+    }
+    state.textContent = `มี ${upcoming.length} งานที่ใกล้ครบกำหนด`;
+    list.replaceChildren(...upcoming.map((task) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'nav-notifications__item';
+      item.dataset.notificationId = String(task.id);
+      if (String(task.id) === String(assignedTaskId)) item.dataset.newlyAssigned = 'true';
+      const title = document.createElement('strong');
+      title.textContent = task.title || 'งานไม่มีชื่อ';
+      const details = document.createElement('span');
+      const dueAt = new Date(task.due_at);
+      details.textContent = `${task.subject || 'ไม่ระบุวิชา'} · ${new Intl.DateTimeFormat('th-TH', {
+        weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+      }).format(dueAt)}`;
+      item.append(title, details);
+      item.addEventListener('click', () => navigate?.('/deadlines'));
+      return item;
+    }));
+  };
+  const refresh = ({ assignedTask } = {}) => {
+    const assignedDueAt = new Date(assignedTask?.due_at).getTime();
+    const currentTime = now().getTime();
+    const shouldRevealAssignment = Number.isSafeInteger(Number(assignedTask?.id))
+      && !assignedTask?.is_completed
+      && Number.isFinite(assignedDueAt)
+      && assignedDueAt >= currentTime
+      && assignedDueAt <= currentTime + NOTIFICATION_WINDOW_MS;
     const version = ++refreshVersion;
     state.textContent = 'กำลังโหลดการแจ้งเตือน…';
     list.replaceChildren();
+    if (shouldRevealAssignment) {
+      toggle.setAttribute('aria-expanded', 'true');
+      panel.hidden = false;
+      const optimisticTasks = [
+        ...currentNotifications.filter((task) => String(task.id) !== String(assignedTask.id)),
+        assignedTask,
+      ].filter((task) => isUpcoming(task, currentTime))
+        .sort((left, right) => new Date(left.due_at).getTime() - new Date(right.due_at).getTime());
+      renderNotifications(optimisticTasks, assignedTask.id);
+    }
     Promise.resolve()
       .then(() => loadDeadlines())
       .then((tasks) => {
         if (version !== refreshVersion) return;
-        const currentTime = now().getTime();
-        const upcoming = (Array.isArray(tasks) ? tasks : [])
-          .filter((task) => {
-            const dueAt = new Date(task?.due_at).getTime();
-            return !task?.is_completed
-              && Number.isFinite(dueAt)
-              && dueAt >= currentTime
-              && dueAt <= currentTime + NOTIFICATION_WINDOW_MS;
-          })
-          .sort((left, right) => new Date(left.due_at).getTime() - new Date(right.due_at).getTime());
-        count.textContent = String(upcoming.length);
-        count.hidden = upcoming.length === 0;
-        if (upcoming.length === 0) {
-          state.textContent = 'ไม่มีงานใน 24 ชั่วโมงข้างหน้า';
-          return;
+        const taskList = Array.isArray(tasks) ? [...tasks] : [];
+        if (shouldRevealAssignment && !taskList.some((task) => String(task?.id) === String(assignedTask.id))) {
+          taskList.push(assignedTask);
         }
-        state.textContent = `มี ${upcoming.length} งานที่ใกล้ครบกำหนด`;
-        list.replaceChildren(...upcoming.map((task) => {
-          const item = document.createElement('button');
-          item.type = 'button';
-          item.className = 'nav-notifications__item';
-          item.dataset.notificationId = String(task.id);
-          const title = document.createElement('strong');
-          title.textContent = task.title || 'งานไม่มีชื่อ';
-          const details = document.createElement('span');
-          const dueAt = new Date(task.due_at);
-          details.textContent = `${task.subject || 'ไม่ระบุวิชา'} · ${new Intl.DateTimeFormat('th-TH', {
-            weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
-          }).format(dueAt)}`;
-          item.append(title, details);
-          item.addEventListener('click', () => navigate?.('/deadlines'));
-          return item;
-        }));
+        const upcoming = taskList
+          .filter((task) => isUpcoming(task, now().getTime()))
+          .sort((left, right) => new Date(left.due_at).getTime() - new Date(right.due_at).getTime());
+        renderNotifications(upcoming, shouldRevealAssignment ? assignedTask.id : null);
       })
       .catch(() => {
-        if (version === refreshVersion) state.textContent = 'โหลดการแจ้งเตือนไม่สำเร็จ';
+        if (version !== refreshVersion) return;
+        state.textContent = shouldRevealAssignment
+          ? 'แสดงงานใหม่แล้ว แต่โหลดรายการอื่นไม่สำเร็จ'
+          : 'โหลดการแจ้งเตือนไม่สำเร็จ';
       });
   };
   toggle.addEventListener('click', () => {
@@ -177,7 +213,7 @@ function createNotifications(navigate, loadDeadlines, now) {
   notifications.append(toggle, panel);
   refresh();
 
-  return notifications;
+  return { element: notifications, refresh };
 }
 
 function createThemeMenu(themeId, onThemeChange) {
@@ -306,15 +342,20 @@ export function renderNavbar(user, {
   nav.className = 'navbar';
 
   const brand = createLink('SynapseSync', '/', navigate, 'brand');
-  const brandMark = document.createElement('span');
+  const brandMark = document.createElement('img');
   brandMark.className = 'brand-mark';
+  brandMark.src = '/brand-logo.png';
+  brandMark.alt = '';
   brandMark.setAttribute('aria-hidden', 'true');
   brand.prepend(brandMark);
 
   const tools = document.createElement('div');
   tools.className = 'nav-tools';
+  let refreshNotifications = () => {};
   if (user) {
-    tools.append(createNotifications(navigate, loadDeadlines, now));
+    const notificationControl = createNotifications(navigate, loadDeadlines, now);
+    tools.append(notificationControl.element);
+    refreshNotifications = notificationControl.refresh;
     tools.append(createAccountMenu(user, { currentPath, navigate, onLogout, themeId, onThemeChange }));
   } else {
     tools.append(createLink('เข้าสู่ระบบ', '/login', navigate, 'nav-auth-link'));
@@ -354,5 +395,6 @@ export function renderNavbar(user, {
   for (const item of visibleItems) dock.append(createNavItem(item, currentPath, navigate));
 
   navigation.append(header, dock);
+  navigation.refreshNotifications = refreshNotifications;
   return navigation;
 }

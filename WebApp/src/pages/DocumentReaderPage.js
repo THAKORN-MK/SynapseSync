@@ -3,6 +3,7 @@ import {
   deleteDocument as deleteDocumentRequest,
   getDocument as getDocumentRequest,
   getDocumentContent as getDocumentContentRequest,
+  getDocumentDownloadUrl as getDocumentDownloadUrlRequest,
   getDocumentText as getDocumentTextRequest,
   renameDocument as renameDocumentRequest,
   replaceDocumentTags as replaceDocumentTagsRequest,
@@ -34,6 +35,27 @@ function routeLink(label, path, navigate, className = 'button button-secondary')
     navigate?.(path);
   });
   return link;
+}
+
+function svgIcon(paths) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  for (const d of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function pencilIcon() {
+  return svgIcon(['M12 20h9', 'M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z']);
+}
+
+function trashIcon() {
+  return svgIcon(['M4 7h16', 'M9 7V4h6v3', 'M6.5 7l1 13h9l1-13', 'M10 11v5', 'M14 11v5']);
 }
 
 function clampRatio(value) {
@@ -68,6 +90,7 @@ export function renderDocumentReaderPage({
   documentId,
   loadDocument = getDocumentRequest,
   loadDocumentContent = getDocumentContentRequest,
+  getDocumentDownloadUrl = getDocumentDownloadUrlRequest,
   loadDocumentText = getDocumentTextRequest,
   saveProgress = saveDocumentProgressRequest,
   updateTitle = renameDocumentRequest,
@@ -193,19 +216,37 @@ export function renderDocumentReaderPage({
   }
 
   function buildReaderShell(tagCatalog) {
-    const shell = element('div', 'document-reader-shell');
-    const header = element('header', 'document-reader-header');
-    header.append(
-      routeLink('← กลับคลังเอกสาร', '/documents', navigate, 'button button-quiet document-reader-back'),
+    const isPdf = documentItem.file_type === 'pdf';
+    const shell = element('div', `document-reader-shell${isPdf ? ' document-reader-shell--pdf' : ''}`);
+    const header = element(isPdf ? 'aside' : 'header', `document-reader-header${isPdf ? ' document-reader-sidebar' : ''}`);
+    if (isPdf) {
+      header.setAttribute('aria-label', 'ข้อมูลเอกสารและเครื่องมืออ่าน');
+      header.dataset.role = 'document-sidebar';
+    }
+    const back = routeLink(
+      isPdf ? '' : '← กลับคลังเอกสาร',
+      '/documents',
+      navigate,
+      `button button-secondary document-reader-back${isPdf ? ' document-reader-back--icon' : ''}`,
     );
+    if (isPdf) {
+      back.append(svgIcon(['M19 12H5', 'm12 19-7-7 7-7']));
+      back.setAttribute('aria-label', 'กลับคลังเอกสาร');
+      back.title = 'กลับคลังเอกสาร';
+    }
+    header.append(back);
     const titleRow = element('div', 'document-reader-header__title-row');
     const title = element('h1', '', documentItem.title || 'เอกสารไม่มีชื่อ');
     title.id = 'document-reader-title';
-    titleRow.append(title);
-    const editButton = element('button', 'button button-quiet', 'แก้ชื่อ');
+    const titleGroup = element('div', 'document-reader-header__title');
+    const editButton = element('button', 'button document-reader-title-edit-trigger');
     editButton.type = 'button';
     editButton.dataset.action = 'edit-title';
     editButton.setAttribute('aria-label', 'แก้ชื่อเอกสาร');
+    editButton.title = 'แก้ชื่อเอกสาร';
+    editButton.append(pencilIcon());
+    titleGroup.append(title, editButton);
+    titleRow.append(titleGroup);
     const titleForm = element('form', 'document-reader-title-edit');
     titleForm.hidden = true;
     titleForm.dataset.role = 'title-form';
@@ -258,7 +299,15 @@ export function renderDocumentReaderPage({
         saveTitle.disabled = false;
       }
     });
-    titleRow.append(editButton);
+    const documentActions = element('div', 'document-reader__document-actions');
+    if (isPdf) {
+      const downloadButton = element('a', 'button button-primary document-reader-download', 'ดาวน์โหลด PDF');
+      downloadButton.href = getDocumentDownloadUrl(documentItem.id);
+      downloadButton.download = documentItem.original_filename || 'document.pdf';
+      downloadButton.dataset.action = 'download-pdf';
+      downloadButton.setAttribute('aria-label', `ดาวน์โหลด PDF: ${documentItem.original_filename || documentItem.title}`);
+      documentActions.append(downloadButton);
+    }
 
     const metadata = element('p', 'document-reader-header__metadata', documentItem.original_filename || 'เอกสาร');
     const tagRow = element('div', 'document-reader-header__tags');
@@ -267,7 +316,7 @@ export function renderDocumentReaderPage({
     chips.setAttribute('aria-label', 'แท็กเอกสาร');
     if (!documentItem.tags?.length) chips.append(element('span', 'document-reader__untagged', 'ยังไม่ได้เลือกวิชา'));
     tagSummary.append(chips);
-    const manageTags = element('button', 'button button-quiet', 'จัดการแท็ก');
+    const manageTags = element('button', 'button button-secondary', 'จัดการแท็ก');
     manageTags.type = 'button';
     manageTags.dataset.action = 'manage-tags';
     manageTags.setAttribute('aria-expanded', 'false');
@@ -275,10 +324,13 @@ export function renderDocumentReaderPage({
     pickerContainer.hidden = true;
     makeTagPicker(tagCatalog, tagSummary, pickerContainer, manageTags);
     tagRow.append(tagSummary, manageTags, pickerContainer);
+    const pdfControls = element('div', 'document-reader-pdf-controls');
+    pdfControls.dataset.role = 'pdf-controls';
 
-    const deleteButton = element('button', 'button button-quiet document-reader__delete', 'ลบเอกสาร');
+    const deleteButton = element('button', 'button button-danger document-reader__delete');
     deleteButton.type = 'button';
     deleteButton.dataset.action = 'delete-document';
+    deleteButton.append(trashIcon(), document.createTextNode('ลบเอกสาร'));
     deleteButton.addEventListener('click', async () => {
       if (!confirmDelete(documentItem)) return;
       deleteButton.disabled = true;
@@ -291,7 +343,8 @@ export function renderDocumentReaderPage({
         setMessage(error?.message || 'ลบเอกสารไม่สำเร็จ กรุณาลองอีกครั้ง', true);
       }
     });
-    header.append(titleRow, titleForm, metadata, tagRow, deleteButton);
+    if (isPdf) header.append(titleRow, titleForm, metadata, tagRow, documentActions, pdfControls, deleteButton);
+    else header.append(titleRow, titleForm, metadata, tagRow, deleteButton);
 
     const contentPanel = element('section', 'document-reader-panel');
     contentPanel.setAttribute('aria-label', 'เนื้อหาเอกสาร');
@@ -321,34 +374,13 @@ export function renderDocumentReaderPage({
       if (documentItem.file_type === 'pdf') {
         readingArea.dataset.documentType = 'pdf';
         readingArea.closest('.document-reader-panel').dataset.documentType = 'pdf';
-        const [blob, extracted] = await Promise.all([
-          loadDocumentContent(documentItem.id),
-          loadDocumentText(documentItem.id),
-        ]);
+        const blob = await loadDocumentContent(documentItem.id);
         if (destroyed) return;
-        if (!extracted?.search_available) {
-          const scanNotice = element('p', 'document-reader__scan-notice', 'ไม่พบข้อความค้นหาใน PDF · เอกสารสแกนยังเปิดอ่านได้ แต่ไม่มี OCR');
-          scanNotice.dataset.role = 'pdf-search-unavailable';
-          readingArea.before(scanNotice);
-        }
-        const extractedText = String(extracted?.text ?? '');
-        if (extractedText.trim()) {
-          const textAlternative = element('details', 'document-reader__pdf-text-alternative');
-          textAlternative.dataset.role = 'pdf-text-alternative';
-          const summary = element('summary', '', 'อ่านข้อความที่ดึงได้จาก PDF');
-          const textContent = element('pre', 'document-reader__pdf-text-content');
-          textContent.textContent = extractedText;
-          textAlternative.append(summary);
-          if (extracted?.text_truncated) {
-            textAlternative.append(
-              element('p', 'document-reader__truncation-notice', 'แสดงข้อความได้บางส่วน เนื่องจากเอกสารมีเนื้อหายาว'),
-            );
-          }
-          textAlternative.append(textContent);
-          readingArea.before(textAlternative);
-        }
         const mountedViewer = await mountPdfViewer({
           container: readingArea,
+          toolbarContainer: page.querySelector('[data-role="pdf-controls"]'),
+          fullscreenTarget: shell,
+          compactToolbar: true,
           blob,
           pdfjs,
           initialPage: documentItem.last_page,

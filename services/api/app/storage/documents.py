@@ -10,7 +10,7 @@ from typing import Iterable
 
 
 MAX_DOCUMENT_BYTES = 20_000_000
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".md", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".md", ".txt"}
 _STORAGE_KEY = re.compile(r"^[A-Za-z0-9_-]{40,50}$")
 
 
@@ -48,7 +48,7 @@ def _safe_original_filename(filename: str) -> str:
     basename = PurePosixPath(filename.replace("\\", "/")).name.strip()
     extension = PurePosixPath(basename).suffix.lower()
     if not basename or extension not in SUPPORTED_EXTENSIONS:
-        raise UnsupportedDocumentError("Supported formats are PDF, DOCX, Markdown, and TXT")
+        raise UnsupportedDocumentError("Supported formats are PDF, Markdown, and TXT")
     if len(basename) > 255:
         suffix = PurePosixPath(basename).suffix
         basename = f"{basename[: 255 - len(suffix)]}{suffix}"
