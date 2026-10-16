@@ -62,7 +62,8 @@ def create_app(
     if tutor_provider is not None and tutor_provider_factory is not None:
         raise ValueError("Provide either tutor_provider or tutor_provider_factory, not both")
 
-    data_dir = Path(os.environ.get("SYNAPSESYNC_DATA_DIR", _repository_root() / ".local"))
+    configured_data_dir = os.environ.get("SYNAPSESYNC_DATA_DIR")
+    data_dir = Path(configured_data_dir) if configured_data_dir else _repository_root() / ".local"
     resolved_database_url = database_url or f"sqlite:///{(data_dir / 'synapsesync.db').as_posix()}"
     resolved_image_storage_dir = Path(image_storage_dir) if image_storage_dir else data_dir / "profile-images"
     resolved_document_storage_dir = Path(document_storage_dir) if document_storage_dir else data_dir / "documents"
