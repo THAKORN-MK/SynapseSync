@@ -80,14 +80,16 @@ def _install_pdf_operand_budget() -> None:
         # appended, so bound each object read rather than only completed ops.
         read_object = _data_structures.read_object
 
-        def bounded_read_object(stream: Any, pdf: Any, forced_encoding: Any = None) -> Any:
+        def bounded_read_object(
+            stream: Any, pdf: Any, *args: Any, **kwargs: Any
+        ) -> Any:
             budget = _active_pdf_operand_budget.get()
             if budget is not None:
                 if budget.count >= MAX_PDF_TOTAL_OPERANDS:
                     budget.exceeded = True
                     raise _StopPdfTextExtraction()
                 budget.count += 1
-            return read_object(stream, pdf, forced_encoding)
+            return read_object(stream, pdf, *args, **kwargs)
 
         _data_structures.read_object = bounded_read_object
         _pdf_read_object_budget_patched = True

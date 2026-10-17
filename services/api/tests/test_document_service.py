@@ -17,6 +17,29 @@ from app.services.document_library import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def test_pdf_operand_budget_wrapper_forwards_parser_keywords(monkeypatch):
+    from pypdf.generic import _data_structures
+
+    from app.services import document_library
+
+    parsing_budget = object()
+    forwarded = {}
+
+    def read_object(_stream, _pdf, forced_encoding=None, *, parsing_budget=None):
+        forwarded["forced_encoding"] = forced_encoding
+        forwarded["parsing_budget"] = parsing_budget
+        return "parsed"
+
+    monkeypatch.setattr(_data_structures, "read_object", read_object)
+    monkeypatch.setattr(document_library, "_pdf_read_object_budget_patched", False)
+
+    document_library._install_pdf_operand_budget()
+    result = _data_structures.read_object(None, None, parsing_budget=parsing_budget)
+
+    assert result == "parsed"
+    assert forwarded["parsing_budget"] is parsing_budget
+
+
 def test_document_model_registers_private_document_and_existing_tag_association():
     from app.models import Document
 
