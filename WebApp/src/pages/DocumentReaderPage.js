@@ -217,23 +217,14 @@ export function renderDocumentReaderPage({
 
   function buildReaderShell(tagCatalog) {
     const isPdf = documentItem.file_type === 'pdf';
-    const shell = element('div', `document-reader-shell${isPdf ? ' document-reader-shell--pdf' : ''}`);
-    const header = element(isPdf ? 'aside' : 'header', `document-reader-header${isPdf ? ' document-reader-sidebar' : ''}`);
-    if (isPdf) {
-      header.setAttribute('aria-label', 'ข้อมูลเอกสารและเครื่องมืออ่าน');
-      header.dataset.role = 'document-sidebar';
-    }
-    const back = routeLink(
-      isPdf ? '' : '← กลับคลังเอกสาร',
-      '/documents',
-      navigate,
-      `button button-secondary document-reader-back${isPdf ? ' document-reader-back--icon' : ''}`,
-    );
-    if (isPdf) {
-      back.append(svgIcon(['M19 12H5', 'm12 19-7-7 7-7']));
-      back.setAttribute('aria-label', 'กลับคลังเอกสาร');
-      back.title = 'กลับคลังเอกสาร';
-    }
+    const shell = element('div', `document-reader-shell document-reader-shell--split${isPdf ? ' document-reader-shell--pdf' : ''}`);
+    const header = element('aside', 'document-reader-header document-reader-sidebar');
+    header.setAttribute('aria-label', isPdf ? 'ข้อมูลเอกสารและเครื่องมืออ่าน' : 'ข้อมูลเอกสาร');
+    header.dataset.role = 'document-sidebar';
+    const back = routeLink('', '/documents', navigate, 'button button-secondary document-reader-back document-reader-back--icon');
+    back.append(svgIcon(['M19 12H5', 'm12 19-7-7 7-7']));
+    back.setAttribute('aria-label', 'กลับคลังเอกสาร');
+    back.title = 'กลับคลังเอกสาร';
     header.append(back);
     const titleRow = element('div', 'document-reader-header__title-row');
     const title = element('h1', '', documentItem.title || 'เอกสารไม่มีชื่อ');

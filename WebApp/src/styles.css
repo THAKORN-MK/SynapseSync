@@ -1942,15 +1942,15 @@ main {
 .document-reader-header,
 .document-reader-panel { min-width: 0; border: 1px solid var(--line); border-radius: 1.1rem; background: var(--glass); box-shadow: var(--shadow), inset 0 1px var(--surface-highlight); backdrop-filter: blur(16px) saturate(135%); -webkit-backdrop-filter: blur(16px) saturate(135%); }
 .document-reader-header { display: grid; gap: 0.65rem; padding: clamp(0.9rem, 2vw, 1.25rem); }
-.document-reader-shell--pdf { grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr); align-items: start; gap: 0.85rem; }
-.document-reader-shell--pdf .document-reader-sidebar { position: sticky; top: calc(var(--site-header-offset, 76px) + 0.75rem); align-self: start; grid-column: 1; gap: 0.7rem; }
-.document-reader-shell--pdf .document-reader-panel { grid-column: 2; }
+.document-reader-shell--split { grid-template-columns: minmax(14rem, 16rem) minmax(0, 1fr); align-items: start; gap: 0.85rem; }
+.document-reader-shell--split .document-reader-sidebar { position: sticky; top: calc(var(--site-header-offset, 76px) + 0.75rem); align-self: start; grid-column: 1; gap: 0.7rem; }
+.document-reader-shell--split .document-reader-panel { grid-column: 2; }
 .document-reader-header__title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8rem; }
 .document-reader-header__title { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 0.45rem; }
 .document-reader-header__actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 0.45rem; }
 .document-reader-header h1 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: clamp(1.6rem, 4vw, 2.35rem); letter-spacing: -0.035em; }
-.document-reader-shell--pdf .document-reader-header__title-row { justify-content: flex-start; }
-.document-reader-shell--pdf .document-reader-header h1 { font-size: clamp(1.08rem, 1.35vw, 1.32rem); line-height: 1.35; }
+.document-reader-shell--split .document-reader-header__title-row { justify-content: flex-start; }
+.document-reader-shell--split .document-reader-header h1 { font-size: clamp(1.08rem, 1.35vw, 1.32rem); line-height: 1.35; }
 .document-reader-header .button-secondary { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); color: var(--accent-hover); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
 .document-reader-header .button-secondary:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
 .document-reader-back--icon { width: 2.5rem; min-height: 2.5rem; padding: 0.55rem; }
@@ -1961,8 +1961,8 @@ main {
 .document-reader__delete svg { width: 1rem; height: 1rem; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .document-reader-header__metadata { margin: -0.25rem 0 0; color: var(--muted); font-size: 0.88rem; overflow-wrap: anywhere; }
 .document-reader-header__tags { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.6rem 0.8rem; }
-.document-reader-shell--pdf .document-reader-header__tags { grid-template-columns: 1fr; align-items: start; gap: 0.45rem; }
-.document-reader-shell--pdf .document-reader-header__tags > .button,
+.document-reader-shell--split .document-reader-header__tags { grid-template-columns: 1fr; align-items: start; gap: 0.45rem; }
+.document-reader-shell--split .document-reader-header__tags > .button,
 .document-reader__document-actions > .button { width: 100%; }
 .document-reader__tag-summary { min-width: 0; }
 .document-reader__untagged { color: var(--subtle); font-size: 0.84rem; }
@@ -2049,9 +2049,9 @@ main {
   .document-library-search { grid-template-columns: minmax(0, 1fr) minmax(9rem, 0.7fr); }
   .document-library-search > .button { grid-column: 1 / -1; }
   .document-reader-page { padding: 1.2rem 0 calc(7rem + env(safe-area-inset-bottom)); }
-  .document-reader-shell--pdf { grid-template-columns: minmax(0, 1fr); }
-  .document-reader-shell--pdf .document-reader-sidebar { top: calc(var(--site-header-offset, 4.2rem) + 0.5rem); grid-column: 1; z-index: 42; }
-  .document-reader-shell--pdf .document-reader-panel { grid-column: 1; }
+  .document-reader-shell--split { grid-template-columns: minmax(0, 1fr); }
+  .document-reader-shell--split .document-reader-sidebar { top: calc(var(--site-header-offset, 4.2rem) + 0.5rem); grid-column: 1; z-index: 42; }
+  .document-reader-shell--split .document-reader-panel { grid-column: 1; }
   .document-reader-content { min-height: 0; max-height: none; padding: 1rem; }
 }
 

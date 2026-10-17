@@ -97,6 +97,26 @@ describe('document reader page', () => {
     expect(page.textContent).toContain('แสดงข้อความได้บางส่วน');
   });
 
+  it('uses the same left reader sidebar for Markdown without showing PDF controls', async () => {
+    const page = renderPage({
+      loadDocument: async () => ({ ...documentItem, file_type: 'md' }),
+    });
+    document.body.append(page);
+    await flushPromises();
+
+    const shell = page.querySelector('.document-reader-shell--split');
+    const sidebar = page.querySelector('.document-reader-sidebar');
+    const contentPanel = page.querySelector('.document-reader-panel');
+
+    expect(shell).not.toBeNull();
+    expect(sidebar?.tagName).toBe('ASIDE');
+    expect(sidebar?.contains(page.querySelector('#document-reader-title'))).toBe(true);
+    expect(sidebar?.querySelector('[data-route="/documents"]')?.getAttribute('aria-label')).toBe('กลับคลังเอกสาร');
+    expect(contentPanel?.contains(page.querySelector('.document-reader-markdown'))).toBe(true);
+    expect(sidebar?.querySelector('[data-role="pdf-controls"]')).toBeNull();
+    expect(page.querySelector('.pdf-viewer__toolbar')).toBeNull();
+  });
+
   it('centers the reading column and uses a larger single-page-scroll reading area', async () => {
     const styles = readFileSync('src/styles.css', 'utf8');
     expect(styles).toMatch(/\.document-reader-content\s*\{[^}]*font-size:\s*clamp\(/);
@@ -248,8 +268,8 @@ describe('document reader page', () => {
 
   it('keeps the PDF reader sidebar sticky and the reading surface centered', () => {
     const styles = readFileSync('src/styles.css', 'utf8');
-    expect(styles).toMatch(/\.document-reader-shell--pdf\s*\{[^}]*grid-template-columns:/s);
-    expect(styles).toMatch(/\.document-reader-shell--pdf \.document-reader-sidebar\s*\{[^}]*position:\s*sticky/s);
+    expect(styles).toMatch(/\.document-reader-shell--split\s*\{[^}]*grid-template-columns:/s);
+    expect(styles).toMatch(/\.document-reader-shell--split \.document-reader-sidebar\s*\{[^}]*position:\s*sticky/s);
     expect(styles).toMatch(/\.document-reader-sidebar \.pdf-viewer__toolbar\s*\{[^}]*display:\s*grid/s);
     expect(styles).toMatch(/\.pdf-viewer\s*\{[^}]*margin-inline:\s*auto/s);
     expect(styles).toMatch(/\.pdf-viewer__pages\s*\{[^}]*margin-inline:\s*auto/s);
