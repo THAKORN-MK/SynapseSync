@@ -69,6 +69,17 @@ def test_extracts_pdf_text_and_accepts_valid_pdf_without_extractable_text():
     assert scan_result.search_available is False
 
 
+def test_extracts_pdf_with_recoverable_cross_reference_offset():
+    source = (FIXTURES / "tiny-text.pdf").read_bytes()
+    startxref = source.rfind(b"startxref")
+    eof = source.find(b"%%EOF", startxref)
+    recoverable_pdf = source[:startxref] + b"startxref\n0\n" + source[eof:]
+
+    result = extract_library_text("recoverable.pdf", recoverable_pdf)
+
+    assert "PDF learning text for extraction." in result.extracted_text
+
+
 def test_caps_reading_text_and_marks_both_reader_and_search_truncation():
     result = extract_library_text("large.txt", ("a" * 2_000_001).encode())
 
@@ -101,7 +112,7 @@ def test_pdf_text_is_capped_during_parser_callbacks(monkeypatch):
         pages = [HugePage()]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -164,7 +175,7 @@ def test_pdf_extraction_stops_when_aggregate_page_content_budget_is_exceeded(mon
         pages = [FakePage() for _ in range(4)]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -222,7 +233,7 @@ def test_pdf_extraction_counts_form_xobject_streams_again_for_each_invocation(mo
         pages = [FakePage()]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -287,7 +298,7 @@ def test_pdf_extraction_truncates_when_nested_form_resources_exceed_depth_budget
         pages = [FakePage()]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -357,7 +368,7 @@ def test_pdf_extraction_scans_shared_form_resource_dags_once(monkeypatch):
         pages = [FakePage()]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -415,7 +426,7 @@ def test_pdf_extraction_truncates_when_form_resource_node_budget_is_exceeded(mon
         pages = [FakePage()]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()
@@ -470,7 +481,7 @@ def test_pdf_extraction_enforces_form_resource_node_budget_across_pages(monkeypa
         pages = [FakePage(1), FakePage(2)]
 
         def __init__(self, _stream, strict):
-            assert strict is True
+            assert strict is False
 
     monkeypatch.setattr("pypdf.PdfReader", FakeReader)
     source_pdf = (FIXTURES / "tiny-text.pdf").read_bytes()

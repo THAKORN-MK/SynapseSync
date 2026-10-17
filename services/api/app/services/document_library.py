@@ -147,7 +147,10 @@ def _extract_pdf(content: bytes) -> tuple[str, bool]:
             if hasattr(get_configuration(), name)
         }
         with apply_configuration(**supported_overrides):
-            reader = PdfReader(BytesIO(content), strict=True)
+            # Real-world PDFs frequently contain recoverable xref/metadata
+            # inconsistencies. Keep pypdf's bounded parsing safeguards below,
+            # but let it repair those minor format issues during loading.
+            reader = PdfReader(BytesIO(content), strict=False)
             pages = reader.pages
             if len(pages) > MAX_PDF_PAGES:
                 raise InvalidDocumentError("PDF contains too many pages to safely extract")
