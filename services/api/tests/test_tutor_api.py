@@ -8,6 +8,9 @@ from io import BytesIO
 from threading import Event
 
 from PIL import Image
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 import app.ai.catalog as ai_catalog
 from app.ai.catalog import ModelSelection
@@ -56,6 +59,31 @@ class IdentifiedTutorProvider(ScriptedTutorProvider):
         super().__init__(*responses)
         self.provider_id = provider_id
         self.model_name = model_id
+
+
+class _MemoryStorageProvider:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], tuple[bytes, str]] = {}
+        self.put_calls: list[tuple[str, str, bytes, str]] = []
+        self.read_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
+        self._next_key_id = 0
+
+    def new_key(self, owner_id: int, suffix: str = "") -> str:
+        self._next_key_id += 1
+        return f"{owner_id}/{self._next_key_id:043d}{suffix}"
+
+    def put(self, bucket: str, key: str, content: bytes, content_type: str) -> None:
+        self.put_calls.append((bucket, key, content, content_type))
+        self.objects[(bucket, key)] = (content, content_type)
+
+    def read(self, bucket: str, key: str) -> bytes:
+        self.read_calls.append((bucket, key))
+        return self.objects[(bucket, key)][0]
+
+    def delete(self, bucket: str, key: str) -> None:
+        self.delete_calls.append((bucket, key))
+        self.objects.pop((bucket, key), None)
 
 
 def _register(client, email: str) -> dict[str, object]:
@@ -329,15 +357,42 @@ def test_image_attachment_can_be_referenced_again_without_copying_file(
     assert len(list((tmp_path / "tutor-images").iterdir())) == 1
 
 
+def test_tutor_upload_db_failure_deletes_uploaded_objects(client_factory, monkeypatch, tmp_path):
+    _enable_test_image_models(monkeypatch, ("openai", "gpt-5.4-mini"))
+    storage = _MemoryStorageProvider()
+    with client_factory(
+        tutor_provider=IdentifiedTutorProvider("openai", "gpt-5.4-mini"),
+        storage_provider=storage,
+        tutor_attachment_storage_dir=tmp_path / "tutor-images",
+    ) as client:
+        _register(client, "tutor-storage-rollback@example.com")
+
+        def fail_commit(_session):
+            raise SQLAlchemyError("database unavailable")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+        with pytest.raises(SQLAlchemyError, match="database unavailable"):
+            _create_with_image(client, request_id="tutor-storage-rollback")
+        monkeypatch.undo()
+
+    assert len(storage.put_calls) == 1
+    bucket, key, payload, content_type = storage.put_calls[0]
+    assert (bucket, payload, content_type) == ("tutor-attachments", _png_bytes(), "image/png")
+    assert storage.delete_calls == [("tutor-attachments", key)]
+    assert storage.objects == {}
+
+
 def test_attachment_read_and_reference_are_owner_and_conversation_scoped(
     client_factory, monkeypatch, tmp_path
 ):
     _enable_test_image_models(monkeypatch, ("openai", "gpt-5.4-mini"))
     provider = IdentifiedTutorProvider("openai", "gpt-5.4-mini")
+    storage = _MemoryStorageProvider()
     with client_factory(
         tutor_provider=provider,
+        storage_provider=storage,
         tutor_attachment_storage_dir=tmp_path / "tutor-images",
-    ) as owner, client_factory(tutor_provider=provider) as another_user:
+    ) as owner, client_factory(tutor_provider=provider, storage_provider=storage) as another_user:
         _register(owner, "image-owner@example.com")
         created = _create_with_image(owner, request_id="private-image-start")
         conversation_id = created.json()["id"]
@@ -364,9 +419,11 @@ def test_attachment_read_and_reference_are_owner_and_conversation_scoped(
             headers={"Origin": "http://testserver"},
         )
         _register(another_user, "image-not-owner@example.com")
+        reads_before_cross_owner = list(storage.read_calls)
         cross_owner_read = another_user.get(
             f"/api/tutor/conversations/{conversation_id}/attachments/{attachment_id}"
         )
+        reads_after_cross_owner = list(storage.read_calls)
 
     assert created.status_code == 201
     assert own_read.status_code == 200
@@ -374,6 +431,11 @@ def test_attachment_read_and_reference_are_owner_and_conversation_scoped(
     assert cross_conversation_read.status_code == 404
     assert cross_conversation_reference.status_code == 404
     assert cross_owner_read.status_code == 404
+    assert reads_after_cross_owner == reads_before_cross_owner
+    assert len(storage.put_calls) == 1
+    assert storage.put_calls[0][0] == "tutor-attachments"
+    assert storage.put_calls[0][2] == _png_bytes()
+    assert len(storage.read_calls) == 2
 
 
 def test_non_image_model_rejects_attachment_before_provider_call(client_factory, tmp_path):

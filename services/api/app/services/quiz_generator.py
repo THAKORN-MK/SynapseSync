@@ -83,6 +83,7 @@ async def generate_and_save_quiz(
     *,
     input_token_budget: int | None = None,
     source_filename: str = "uploaded document",
+    source_storage_key: str | None = None,
 ) -> Quiz:
     request = build_prompt(source, options, max_input_tokens=input_token_budget)
     generated = await _request_valid_quiz(provider, request, options)
@@ -92,6 +93,7 @@ async def generate_and_save_quiz(
         title=generated.title.strip(),
         source_filename=source_filename[:255],
         source_type=source.source_type,
+        source_storage_key=source_storage_key,
         language=options.language,
         difficulty=options.difficulty,
         question_count=options.question_count,

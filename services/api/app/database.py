@@ -9,6 +9,22 @@ class Base(DeclarativeBase):
     pass
 
 
+def migrate_quiz_source_storage_key(engine) -> None:
+    """Add the nullable source-object key to existing quiz tables."""
+    inspector = inspect(engine)
+    if "quizzes" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("quizzes")}
+    if "source_storage_key" in existing_columns:
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE quizzes ADD COLUMN source_storage_key VARCHAR(128)"
+        )
+
+
 def migrate_profile_fields(engine) -> None:
     """Add learning-profile columns to existing local SQLite databases."""
     if engine.dialect.name != "sqlite":

@@ -18,6 +18,8 @@ _ALLOWED_SUFFIXES = {"", ".jpg", ".png", ".webp", ".pdf", ".docx", ".md", ".txt"
 _BUCKETS: dict[StorageBucket, str] = {
     "profile-avatars": "profile-avatars",
     "documents": "documents",
+    "tutor-attachments": "tutor-attachments",
+    "quiz-sources": "quiz-sources",
 }
 
 
@@ -93,7 +95,7 @@ class SupabaseStorageProvider:
         except httpx.RequestError:
             raise StorageProviderError("Supabase Storage is temporarily unavailable") from None
 
-        if response.status_code == 404:
+        if response.status_code == 404 and (private_read or method == "DELETE"):
             raise StorageObjectNotFoundError("Storage object not found")
         if not response.is_success:
             raise StorageProviderError(f"Supabase Storage request failed (HTTP {response.status_code})")

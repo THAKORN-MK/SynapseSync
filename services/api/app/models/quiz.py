@@ -22,6 +22,7 @@ class Quiz(Base):
     title: Mapped[str] = mapped_column(String(160), nullable=False)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(8), nullable=False)
+    source_storage_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     language: Mapped[str] = mapped_column(String(2), nullable=False)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, nullable=False)

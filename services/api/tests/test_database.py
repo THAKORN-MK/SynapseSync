@@ -48,6 +48,56 @@ def test_users_have_unique_email_and_sessions_reference_a_user(tmp_path) -> None
             session.commit()
 
 
+def test_migrate_quiz_source_storage_key_is_idempotent_and_preserves_rows(tmp_path) -> None:
+    database = importlib.import_module("app.database")
+    models = importlib.import_module("app.models")
+    database_url = f"sqlite:///{Path(tmp_path / 'legacy-quiz-source.db').as_posix()}"
+    session_factory = database.create_session_factory(database_url)
+    engine = session_factory.kw["bind"]
+    database.Base.metadata.create_all(bind=engine)
+
+    with session_factory() as session:
+        user = models.User(
+            email="legacy-quiz-source@example.test",
+            display_name="Legacy Quiz",
+            password_hash="$argon2id$test",
+        )
+        session.add(user)
+        session.flush()
+        quiz = models.Quiz(
+            user_id=user.id,
+            title="Retained quiz",
+            source_filename="lesson.txt",
+            source_type="txt",
+            language="en",
+            difficulty="basic",
+            question_count=0,
+            prompt_version="quiz_generation_v1",
+        )
+        session.add(quiz)
+        session.commit()
+        quiz_id = quiz.id
+
+    if "source_storage_key" in {column["name"] for column in inspect(engine).get_columns("quizzes")}:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE quizzes DROP COLUMN source_storage_key")
+
+    database.migrate_quiz_source_storage_key(engine)
+    database.migrate_quiz_source_storage_key(engine)
+
+    columns = {column["name"]: column for column in inspect(engine).get_columns("quizzes")}
+    with session_factory() as session:
+        preserved_quiz = session.get(models.Quiz, quiz_id)
+
+    assert "source_storage_key" in columns
+    assert columns["source_storage_key"]["nullable"] is True
+    assert preserved_quiz is not None
+    assert preserved_quiz.title == "Retained quiz"
+    assert preserved_quiz.source_filename == "lesson.txt"
+    assert preserved_quiz.source_storage_key is None
+    engine.dispose()
+
+
 @pytest.mark.parametrize(
     "database_url",
     [

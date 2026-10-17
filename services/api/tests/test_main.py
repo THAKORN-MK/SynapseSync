@@ -22,6 +22,29 @@ def test_configured_data_directory_does_not_resolve_repository_root(tmp_path: Pa
 
     assert application.state.image_storage_dir == configured_data_dir / "profile-images"
     assert application.state.document_storage_dir == configured_data_dir / "documents"
+    assert application.state.tutor_attachment_storage_dir == configured_data_dir / "tutor-attachments"
+    assert application.state.quiz_source_storage_dir == configured_data_dir / "quiz-sources"
+
+
+@pytest.mark.parametrize("storage_backend", [None, "local"])
+def test_render_service_requires_explicit_supabase_backend(
+    tmp_path: Path,
+    monkeypatch,
+    storage_backend: str | None,
+) -> None:
+    main = importlib.import_module("app.main")
+    from app.storage.providers import StorageConfigurationError
+
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-test")
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "")
+    if storage_backend is None:
+        monkeypatch.delenv("STORAGE_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("STORAGE_BACKEND", storage_backend)
+
+    with pytest.raises(StorageConfigurationError, match="Render.*STORAGE_BACKEND.*supabase"):
+        main.create_app(database_url="sqlite:///:memory:")
 
 
 def test_database_url_environment_variable_is_used_when_no_explicit_url(

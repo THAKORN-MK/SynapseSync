@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 from starlette.formparsers import MultiPartParser
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.ai.catalog import ModelSelection
 from app.ai.config import AISettings
@@ -64,6 +68,29 @@ class FakeProvider:
         return response if isinstance(response, str) else json.dumps(response)
 
 
+class _MemoryStorageProvider:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], tuple[bytes, str]] = {}
+        self.put_calls: list[tuple[str, str, bytes, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
+        self._next_key_id = 0
+
+    def new_key(self, owner_id: int, suffix: str = "") -> str:
+        self._next_key_id += 1
+        return f"{owner_id}/{self._next_key_id:043d}{suffix}"
+
+    def put(self, bucket: str, key: str, content: bytes, content_type: str) -> None:
+        self.put_calls.append((bucket, key, content, content_type))
+        self.objects[(bucket, key)] = (content, content_type)
+
+    def read(self, bucket: str, key: str) -> bytes:
+        return self.objects[(bucket, key)][0]
+
+    def delete(self, bucket: str, key: str) -> None:
+        self.delete_calls.append((bucket, key))
+        self.objects.pop((bucket, key), None)
+
+
 def _register(client):
     response = client.post(
         "/api/auth/register",
@@ -96,6 +123,16 @@ def _valid_quiz(count: int = 5, kind: str = "multiple_choice"):
         "title": "Generated study quiz",
         "questions": [_question(kind, position) for position in range(1, count + 1)],
     }
+
+
+def _docx_bytes() -> bytes:
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph("Original DOCX source text.")
+    stream = BytesIO()
+    document.save(stream)
+    return stream.getvalue()
 
 
 def _form_data(
@@ -352,6 +389,90 @@ def test_generate_saves_quiz_and_questions_for_current_user(client_factory):
     assert quiz.source_filename == "lesson.md"
     assert len(questions) == 5
     assert [question.position for question in questions] == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    ("filename", "source_bytes", "expected_content_type"),
+    [
+        ("lesson.pdf", (Path(__file__).parent / "fixtures" / "tiny-text.pdf").read_bytes(), "application/pdf"),
+        (
+            "lesson.docx",
+            _docx_bytes(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        ("lesson.md", b"# Topic\n\nOriginal text source.", "text/markdown"),
+        ("lesson.txt", b"Original plain text source.", "text/plain"),
+    ],
+    ids=["pdf", "docx", "markdown", "text"],
+)
+def test_generate_upload_persists_source_key_in_private_storage(
+    client_factory,
+    filename: str,
+    source_bytes: bytes,
+    expected_content_type: str,
+):
+    provider = _MemoryStorageProvider()
+    with client_factory(
+        quiz_provider=FakeProvider([_valid_quiz()]),
+        storage_provider=provider,
+    ) as client:
+        owner = _register(client)
+        response = _generate(client, content=source_bytes, filename=filename)
+        with client.app.state.session_factory() as session:
+            saved_quiz = session.scalar(select(Quiz))
+
+    assert response.status_code == 201, response.text
+    assert saved_quiz is not None
+    assert provider.put_calls == [
+        ("quiz-sources", saved_quiz.source_storage_key, source_bytes, expected_content_type)
+    ]
+    assert saved_quiz.source_storage_key.startswith(f"{owner['id']}/")
+    assert provider.objects[("quiz-sources", saved_quiz.source_storage_key)] == (
+        source_bytes,
+        expected_content_type,
+    )
+    assert saved_quiz.source_storage_key not in response.text
+
+
+def test_generate_failure_removes_uploaded_source_object(client_factory):
+    provider = _MemoryStorageProvider()
+    with client_factory(
+        quiz_provider=FakeProvider(error=ProviderError("private provider detail")),
+        storage_provider=provider,
+    ) as client:
+        _register(client)
+        response = _generate(client, filename="lesson.txt", content=b"Original source text.")
+
+    assert response.status_code == 502
+    assert len(provider.put_calls) == 1
+    assert provider.put_calls[0][0] == "quiz-sources"
+    assert provider.delete_calls == [("quiz-sources", provider.put_calls[0][1])]
+    assert provider.objects == {}
+
+
+def test_generate_database_failure_removes_uploaded_source_object(client_factory, monkeypatch):
+    provider = _MemoryStorageProvider()
+    with client_factory(
+        quiz_provider=FakeProvider([_valid_quiz()]),
+        storage_provider=provider,
+    ) as client:
+        _register(client)
+
+        def fail_commit(_session):
+            raise SQLAlchemyError("database unavailable")
+
+        monkeypatch.setattr(Session, "commit", fail_commit)
+        response = _generate(client, filename="lesson.txt", content=b"Original source text.")
+        monkeypatch.undo()
+        with client.app.state.session_factory() as session:
+            saved_quizzes = session.scalars(select(Quiz)).all()
+
+    assert response.status_code == 500
+    assert saved_quizzes == []
+    assert len(provider.put_calls) == 1
+    assert provider.put_calls[0][0] == "quiz-sources"
+    assert provider.delete_calls == [("quiz-sources", provider.put_calls[0][1])]
+    assert provider.objects == {}
 
 
 def test_generate_response_never_contains_answer_key(client_factory):

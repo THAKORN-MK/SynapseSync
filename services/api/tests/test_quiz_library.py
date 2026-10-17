@@ -8,6 +8,27 @@ from sqlalchemy import func, select
 from app.models import Quiz, QuizAnswer, QuizAttempt, QuizQuestion, Tag, User
 
 
+class _MemoryStorageProvider:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], tuple[bytes, str]] = {}
+        self.delete_calls: list[tuple[str, str]] = []
+        self._next_key_id = 0
+
+    def new_key(self, owner_id: int, suffix: str = "") -> str:
+        self._next_key_id += 1
+        return f"{owner_id}/{self._next_key_id:043d}{suffix}"
+
+    def put(self, bucket: str, key: str, content: bytes, content_type: str) -> None:
+        self.objects[(bucket, key)] = (content, content_type)
+
+    def read(self, bucket: str, key: str) -> bytes:
+        return self.objects[(bucket, key)][0]
+
+    def delete(self, bucket: str, key: str) -> None:
+        self.delete_calls.append((bucket, key))
+        self.objects.pop((bucket, key), None)
+
+
 def _register(client, email="owner@example.com"):
     response = client.post(
         "/api/auth/register",
@@ -226,6 +247,40 @@ def test_owner_can_delete_quiz_and_cascades_history_but_keeps_shared_tags(client
             assert session.get(QuizAnswer, answer_id) is None
             assert session.get(Tag, tag_id) is not None
             assert session.execute(select(func.count()).select_from(Quiz.__table__.metadata.tables["quiz_tags"])).scalar_one() == 0
+
+
+def test_owner_can_delete_quiz_and_removes_source_object(client_factory):
+    storage = _MemoryStorageProvider()
+    with client_factory(storage_provider=storage) as client:
+        owner = _register(client, "quiz-source-delete-owner@example.com")
+        with client.app.state.session_factory() as session:
+            other = _second_user(session)
+            owner_quiz = _create_quiz(session, owner["id"], "Owner source quiz", datetime.now(timezone.utc))
+            foreign_quiz = _create_quiz(session, other.id, "Foreign source quiz", datetime.now(timezone.utc))
+            owner_key = storage.new_key(owner["id"], ".md")
+            foreign_key = storage.new_key(other.id, ".txt")
+            storage.put("quiz-sources", owner_key, b"owner source", "text/markdown")
+            storage.put("quiz-sources", foreign_key, b"foreign source", "text/plain")
+            owner_quiz.source_storage_key = owner_key
+            foreign_quiz.source_storage_key = foreign_key
+            session.commit()
+            owner_quiz_id, foreign_quiz_id = owner_quiz.id, foreign_quiz.id
+
+        foreign_delete = client.delete(
+            f"/api/quizzes/{foreign_quiz_id}",
+            headers={"Origin": "http://testserver"},
+        )
+        assert foreign_delete.status_code == 404
+        assert storage.delete_calls == []
+
+        owner_delete = client.delete(
+            f"/api/quizzes/{owner_quiz_id}",
+            headers={"Origin": "http://testserver"},
+        )
+
+    assert owner_delete.status_code == 204
+    assert storage.delete_calls == [("quiz-sources", owner_key)]
+    assert ("quiz-sources", foreign_key) in storage.objects
 
 
 def test_delete_quiz_returns_same_not_found_for_foreign_and_unknown_ids(client_factory):

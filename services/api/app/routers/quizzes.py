@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -45,6 +46,7 @@ from app.services.quiz_generator import (
     generate_and_save_quiz,
 )
 from app.services.quiz_grader import grade_answers
+from app.storage.providers import FileStorageProvider
 from app.tags.service import (
     QuizOrTagNotFoundError,
     TagAssignmentPersistenceError,
@@ -52,6 +54,13 @@ from app.tags.service import (
 )
 
 UPLOAD_CHUNK_BYTES = 64 * 1024
+_QUIZ_SOURCE_TYPES = {
+    "pdf": (".pdf", "application/pdf"),
+    "docx": (".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "md": (".md", "text/markdown"),
+    "txt": (".txt", "text/plain"),
+}
+_LOGGER = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/quizzes", tags=["quizzes"])
 
@@ -75,6 +84,15 @@ def _safe_source_filename(filename: str | None) -> str:
     normalized = (filename or "uploaded-document").replace("\\", "/").split("/")[-1]
     safe = "".join(character for character in normalized if character >= " " and character != "\x7f")
     return (safe[:255] or "uploaded-document")
+
+
+def _cleanup_quiz_source(storage: FileStorageProvider, storage_key: str | None) -> None:
+    if storage_key is None:
+        return
+    try:
+        storage.delete("quiz-sources", storage_key)
+    except Exception:
+        _LOGGER.warning("Could not remove an unreferenced quiz source from private storage")
 
 
 def _provider_from_request(
@@ -245,16 +263,31 @@ async def generate_quiz(
     except (EmptyDocumentError, SourceTextTooLongError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
+    source_suffix, source_content_type = _QUIZ_SOURCE_TYPES[source.source_type]
+    storage = request.app.state.storage_provider
+    source_storage_key: str | None = None
     try:
-        quiz = await generate_and_save_quiz(
-            session,
-            user,
-            source,
-            options,
-            _provider_from_request(request, selection.provider_id, selection.model_id),
-            input_token_budget=request.app.state.ai_settings.input_token_budget,
-            source_filename=safe_filename,
-        )
+        source_storage_key = storage.new_key(user.id, source_suffix)
+        storage.put("quiz-sources", source_storage_key, content, source_content_type)
+    except Exception as error:
+        _cleanup_quiz_source(storage, source_storage_key)
+        raise HTTPException(status_code=503, detail="พื้นที่จัดเก็บไฟล์ยังไม่พร้อมใช้งาน") from error
+
+    try:
+        try:
+            quiz = await generate_and_save_quiz(
+                session,
+                user,
+                source,
+                options,
+                _provider_from_request(request, selection.provider_id, selection.model_id),
+                input_token_budget=request.app.state.ai_settings.input_token_budget,
+                source_filename=safe_filename,
+                source_storage_key=source_storage_key,
+            )
+        except Exception:
+            _cleanup_quiz_source(storage, source_storage_key)
+            raise
     except InsufficientMaterialError as error:
         raise HTTPException(status_code=422, detail=error.message) from error
     except ProviderNotConfigured as error:
@@ -450,12 +483,14 @@ def delete_quiz(
 ) -> Response:
     require_same_origin(request)
     quiz = _get_owned_quiz(session, user.id, quiz_id)
+    source_storage_key = quiz.source_storage_key
     try:
         session.delete(quiz)
         session.commit()
     except SQLAlchemyError as error:
         session.rollback()
         raise HTTPException(status_code=500, detail="ไม่สามารถลบแบบทดสอบได้") from error
+    _cleanup_quiz_source(request.app.state.storage_provider, source_storage_key)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

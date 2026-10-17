@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import re
-from pathlib import Path
 from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
@@ -43,7 +42,9 @@ from app.services.tutor_conversations import (
     mark_retryable_error,
     save_tutor_reply,
 )
+from app.storage.providers import FileStorageProvider, StorageObjectNotFoundError, StorageProviderError
 from app.storage.tutor_attachments import (
+    cleanup_tutor_attachments,
     InvalidTutorAttachmentError,
     MAX_TUTOR_ATTACHMENT_BYTES,
     TutorAttachmentTooLargeError,
@@ -137,14 +138,14 @@ def _safe_provider_error(error: Exception, conversation_id: int) -> HTTPExceptio
 def _get_request(
     conversation: TutorConversation,
     user_message_id: int,
-    storage_dir: str | Path,
+    storage: FileStorageProvider,
 ) -> TutorRequest:
     turns = []
     for message in conversation.messages[-MAX_TUTOR_CONTEXT_MESSAGES:]:
         images = []
         if message.id == user_message_id:
             for attachment in message.attachments:
-                image_bytes = read_tutor_attachment(attachment.storage_key, storage_dir)
+                image_bytes = read_tutor_attachment(attachment.storage_key, storage)
                 images.append(
                     TutorImageInput(
                         mime_type=attachment.mime_type,
@@ -175,7 +176,8 @@ def _safe_attachment_filename(filename: str | None) -> str:
 
 def _store_uploads(
     uploads: list[UploadFile],
-    storage_dir: str | Path,
+    storage: FileStorageProvider,
+    owner_id: int,
 ) -> tuple[list[NewTutorAttachment], list[str]]:
     if len(uploads) > MAX_TUTOR_IMAGES_PER_MESSAGE:
         raise HTTPException(status_code=422, detail="แนบภาพได้ไม่เกิน 3 ภาพต่อข้อความ")
@@ -185,14 +187,16 @@ def _store_uploads(
     try:
         for upload in uploads:
             try:
-                stored = store_tutor_attachment(upload, storage_dir)
+                stored = store_tutor_attachment(upload, storage, owner_id)
             except TutorAttachmentTooLargeError as error:
                 raise HTTPException(status_code=413, detail="ภาพแต่ละไฟล์ต้องมีขนาดไม่เกิน 5 MiB") from error
             except InvalidTutorAttachmentError as error:
                 raise HTTPException(status_code=415, detail=str(error)) from error
+            except StorageProviderError as error:
+                raise HTTPException(status_code=503, detail="พื้นที่จัดเก็บไฟล์ยังไม่พร้อมใช้งาน") from error
+            storage_keys.append(stored.storage_key)
             total_bytes += stored.byte_size
             if total_bytes > MAX_TUTOR_IMAGE_PAYLOAD_BYTES:
-                Path(storage_dir, stored.storage_key).unlink(missing_ok=True)
                 raise HTTPException(status_code=413, detail="ภาพทั้งหมดรวมกันต้องมีขนาดไม่เกิน 15 MiB")
             attachments.append(
                 NewTutorAttachment(
@@ -202,16 +206,10 @@ def _store_uploads(
                     byte_size=stored.byte_size,
                 )
             )
-            storage_keys.append(stored.storage_key)
     except Exception:
-        _cleanup_attachment_files(storage_dir, storage_keys)
+        cleanup_tutor_attachments(storage, storage_keys)
         raise
     return attachments, storage_keys
-
-
-def _cleanup_attachment_files(storage_dir: str | Path, storage_keys: list[str]) -> None:
-    for storage_key in storage_keys:
-        Path(storage_dir, storage_key).unlink(missing_ok=True)
 
 
 def _ensure_owned_attachment_refs(
@@ -250,9 +248,9 @@ async def _generate_and_store_reply(
         tutor_request = _get_request(
             conversation,
             user_message_id,
-            request.app.state.tutor_attachment_storage_dir,
+            request.app.state.storage_provider,
         )
-    except (ProviderError, ProviderNotConfigured, ValueError, TypeError, OSError) as error:
+    except (ProviderError, ProviderNotConfigured, StorageProviderError, ValueError, TypeError, OSError) as error:
         session.rollback()
         mark_retryable_error(session, user_id, conversation.id, user_message_id)
         raise _safe_provider_error(error, conversation.id) from error
@@ -366,7 +364,8 @@ async def start_conversation_with_images(
     selection = _resolve_selection(request, provider_id, model_id, has_images=bool(uploads))
     stored, storage_keys = _store_uploads(
         uploads,
-        request.app.state.tutor_attachment_storage_dir,
+        request.app.state.storage_provider,
+        user.id,
     )
     try:
         conversation, created = create_conversation(
@@ -381,17 +380,17 @@ async def start_conversation_with_images(
             new_attachments=stored,
         )
     except TutorTagUnavailableError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=404, detail="ไม่พบแท็กที่เลือก") from error
     except TutorRequestConflictError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=409, detail="รหัสคำขอนี้ถูกใช้กับข้อความอื่นแล้ว") from error
     except Exception:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise
 
     if not created:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         response.status_code = status.HTTP_200_OK
         return conversation
     user_message = next(item for item in conversation.messages if item.role == "user")
@@ -436,7 +435,8 @@ async def send_message_with_images(
     )
     stored, storage_keys = _store_uploads(
         uploads,
-        request.app.state.tutor_attachment_storage_dir,
+        request.app.state.storage_provider,
+        user.id,
     )
     try:
         conversation, user_message, created = add_user_message(
@@ -452,23 +452,23 @@ async def send_message_with_images(
             new_attachments=stored,
         )
     except TutorConversationNotFoundError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=404, detail="ไม่พบบทสนทนานี้") from error
     except TutorAttachmentUnavailableError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=404, detail="ไม่พบภาพในบทสนทนานี้") from error
     except TutorRequestConflictError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=409, detail="รหัสคำขอนี้ถูกใช้กับข้อความอื่นแล้ว") from error
     except TutorTurnInProgressError as error:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise HTTPException(status_code=409, detail="บทสนทนานี้กำลังประมวลผล กรุณารอคำตอบก่อนส่งคำถามถัดไป") from error
     except Exception:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         raise
 
     if not created:
-        _cleanup_attachment_files(request.app.state.tutor_attachment_storage_dir, storage_keys)
+        cleanup_tutor_attachments(request.app.state.storage_provider, storage_keys)
         return conversation
     return await _generate_and_store_reply(
         request,
@@ -543,8 +543,12 @@ def get_tutor_attachment(
     try:
         content = read_tutor_attachment(
             attachment.storage_key,
-            request.app.state.tutor_attachment_storage_dir,
+            request.app.state.storage_provider,
         )
+    except StorageObjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ไม่พบภาพในบทสนทนานี้") from error
+    except StorageProviderError as error:
+        raise HTTPException(status_code=503, detail="พื้นที่จัดเก็บไฟล์ยังไม่พร้อมใช้งาน") from error
     except (InvalidTutorAttachmentError, OSError) as error:
         raise HTTPException(status_code=404, detail="ไม่พบภาพในบทสนทนานี้") from error
     return Response(

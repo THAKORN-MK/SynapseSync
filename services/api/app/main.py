@@ -20,6 +20,7 @@ from app.database import (
     migrate_deadline_tag_id,
     migrate_deadline_status,
     migrate_profile_fields,
+    migrate_quiz_source_storage_key,
     migrate_tag_colors,
     migrate_tutor_message_selection,
 )
@@ -50,6 +51,7 @@ def create_app(
     document_storage_dir: str | Path | None = None,
     document_staging_dir: str | Path | None = None,
     tutor_attachment_storage_dir: str | Path | None = None,
+    quiz_source_storage_dir: str | Path | None = None,
     cookie_secure: bool | None = None,
     quiz_provider: QuizProvider | None = None,
     quiz_provider_factory: Callable[[str, str], QuizProvider] | None = None,
@@ -80,6 +82,11 @@ def create_app(
         if tutor_attachment_storage_dir
         else data_dir / "tutor-attachments"
     )
+    resolved_quiz_source_storage_dir = (
+        Path(quiz_source_storage_dir)
+        if quiz_source_storage_dir
+        else data_dir / "quiz-sources"
+    )
     if storage_provider is None:
         api_dir = Path(__file__).resolve().parent.parent
         file_values = dotenv_values(api_dir / ".env")
@@ -90,8 +97,12 @@ def create_app(
         resolved_storage_provider = create_storage_provider(
             image_storage_dir=resolved_image_storage_dir,
             document_storage_dir=resolved_document_storage_dir,
+            tutor_attachment_storage_dir=resolved_tutor_attachment_storage_dir,
+            quiz_source_storage_dir=resolved_quiz_source_storage_dir,
             supabase_url=setting("SUPABASE_URL"),
             supabase_secret_key=setting("SUPABASE_SECRET_KEY"),
+            storage_backend=setting("STORAGE_BACKEND"),
+            is_render=bool(os.environ.get("RENDER_SERVICE_ID", "").strip()),
         )
     else:
         resolved_storage_provider = storage_provider
@@ -106,7 +117,9 @@ def create_app(
         resolved_document_storage_dir.mkdir(parents=True, exist_ok=True)
         resolved_document_staging_dir.mkdir(parents=True, exist_ok=True)
         resolved_tutor_attachment_storage_dir.mkdir(parents=True, exist_ok=True)
+        resolved_quiz_source_storage_dir.mkdir(parents=True, exist_ok=True)
         Base.metadata.create_all(bind=engine)
+        migrate_quiz_source_storage_key(engine)
         migrate_profile_fields(engine)
         migrate_tag_colors(engine)
         migrate_flat_tag_uniqueness(engine)
@@ -132,6 +145,7 @@ def create_app(
     application.state.document_storage_dir = resolved_document_storage_dir
     application.state.document_staging_dir = resolved_document_staging_dir
     application.state.tutor_attachment_storage_dir = resolved_tutor_attachment_storage_dir
+    application.state.quiz_source_storage_dir = resolved_quiz_source_storage_dir
     application.state.storage_provider = resolved_storage_provider
     application.state.cookie_secure = cookie_secure
     resolved_ai_settings = ai_settings or AISettings.from_environment(Path(__file__).resolve().parent.parent)
